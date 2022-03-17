@@ -1,0 +1,597 @@
+---
+---
+```{r, import_libraries}
+library(tidyverse)
+library(dplyr)
+library(lubridate)
+library(broom)
+```
+
+
+```{r, read_data}
+ds <- read.csv("C:/Users/kcheru3/Downloads/lcdatasample.csv", header=TRUE)
+
+View(ds)
+glimpse(ds)
+#There are a total of 100000 rows and 144 variables.
+#loan_status is the target variable.
+sapply(ds, function(x) sum(is.na(x)))
+```
+
+
+```{r, ques_3a}
+#Take a look at the data attributes. How would you categorize these attributes, in broad terms, considering what they pertain to? What are attribute types - which are numeric, categorical, and date variables? What do you think will be the important attributes to consider for your decision task? Which attributes do you think will help determine performance?
+
+ds_attr <- attributes(ds)
+str(ds)
+```
+
+
+```{r, ques_3c}
+#Examine the attributes which you think will be useful in your analyses and modeling. Obtain data descriptions, and develop some plots to visualize the data. Summarize your observations (you answer should be more than just the figures and plots – what is the ‘story’ from your initial observations)
+
+  #Loan status values & restriction to "Fully Paid" or "Charged Off" 
+ds %>% group_by(loan_status) %>% tally()
+ds <- ds %>% filter (loan_status == "Fully Paid" | loan_status == "Charged Off")
+  
+  #How does loan status vary by loan grade and loan purpose
+ds %>% group_by(loan_status, grade) %>% tally()
+table(ds$loan_status, ds$grade)
+
+table(ds$loan_status, ds$purpose)
+
+  #How does number of loans, loan amount, interest rate vary by grade
+ds %>% group_by(grade) %>% summarise(mean(int_rate), mean(loan_amnt), n())
+
+  #Plot loan amount and total payment
+ggplot(ds, aes( x = loan_amnt)) + geom_histogram(aes(fill=grade))
+ggplot(ds, aes( x = loan_amnt)) + geom_boxplot(aes(fill=grade))
+
+ggplot(ds, aes( x = total_pymnt)) + geom_histogram(aes(fill=grade))
+ggplot(ds, aes( x = total_pymnt)) + geom_boxplot(aes(fill=grade))
+```
+
+
+```{r, ques_3d_i_ii}
+#3d(i) What are the values for loan_status ? Are there values other than “fully paid”, “charged off” ? We want to restrict attention to “fully paid” and “charged off” loans, so, other values should be removed.What is the proportion of defaults (‘charged off’ vs ‘fully paid’ loans) in the data? How does default rate vary with loan grade? Does it vary with sub-grade? And is this what you would expect, and why?
+
+#3d(ii) How many loans are there in each grade? And do loan amounts vary by grade? Does interest rate for loans vary with grade, subgrade? Look at #the average, standard-deviation, min and max of interest rate by grade and subgrade. Is this what you expect, and why?
+  
+tbl <- ds %>% group_by(loan_status) %>% tally()
+ggplot(ds, aes(x = loan_status)) + geom_bar()
+
+tbl3 <- ds %>% group_by(loan_status) %>% count() %>% ungroup() %>% mutate(per=`n`/sum(`n`)) %>% arrange(desc(loan_status))
+tbl3$label <- round(tbl3$per*100,2)
+ggplot(data=tbl3)+geom_bar(aes(x="", y=per, fill=loan_status), stat="identity", width = 1)+ coord_polar("y",start=0)+geom_text(aes(x=1, y = cumsum(per) - per/2, label=label)) + xlab("")+ylab("")
+
+round(100*prop.table(table(ds$loan_status)),digits=2)
+
+ds %>% group_by(grade) %>% tally()
+
+table(ds$loan_status,ds$grade)
+table(ds$loan_status,ds$sub_grade)
+
+ggplot(ds, aes(fill=loan_status,x = grade)) + geom_bar(position="fill") + ylab("defaults proportion (%)")
+
+
+ds %>% group_by(grade) %>% summarise(sum(loan_amnt))
+ds %>% group_by(grade) %>% summarise(mean(loan_amnt))
+
+ggplot(ds,aes(x=loan_amnt))+geom_histogram(aes(fill=grade))+facet_grid(~loan_status)
+
+ggplot(ds, aes(x=grade, y=int_rate)) + geom_boxplot()
+
+avgInt_tb_by_grade <- ds %>% group_by(grade) %>% summarise(avgInt_rate=mean(int_rate))
+avgInt_tb_by_grade
+
+avgInt_tb_by_subgrade <- ds %>% group_by(sub_grade) %>% summarise(avgInt_rate=mean(int_rate))
+avgInt_tb_by_subgrade
+
+ggplot(avgInt_tb_by_grade, aes(x=grade,y=avgInt_rate,group=1)) + geom_line() + geom_point()
+
+ggplot(avgInt_tb_by_subgrade, aes(x=sub_grade,y=avgInt_rate,group=1)) + geom_line() + geom_point()
+
+ds %>% group_by(grade) %>% summarise(nLoans=n(),defaults=sum(loan_status=="Charged Off"), defaultRate=defaults/nLoans,minInterest = min(int_rate), maxInterest=max(int_rate),avgInterest=mean(int_rate), stdInterest=sd(int_rate), avgLoanAMt=mean(loan_amnt),avgPmnt=mean(total_pymnt))
+
+ds %>% group_by(sub_grade) %>% summarise(nLoans=n(),defaults=sum(loan_status=="Charged Off"), defaultRate=defaults/nLoans,minInterest = min(int_rate), maxInterest=max(int_rate),avgInterest=mean(int_rate), stdInterest=sd(int_rate), avgLoanAMt=mean(loan_amnt),avgPmnt=mean(total_pymnt))
+```
+
+```{r, ques_3d_iii}
+#3d(iii) For loans which are fully paid back, how does the time-to-full-payoff vary? For this, calculate the ‘actual term’ (issue-date to #last-payment-date) for all loans. How does this actual-term vary by loan grade (a box-plot can help visualize this).
+
+#sum(is.na(ds$issue_d))
+#sum(is.na(ds$last_pymnt_d))
+#sum(is.na(ds[ds$loan_status=='Charged Off',]$last_pymnt_d))
+
+ds$last_pymnt_d<-paste(ds$last_pymnt_d, "-01", sep = "")
+ds$last_pymnt_d<-parse_date_time(ds$last_pymnt_d,  "myd")
+
+#https://www.lendingclub.com/foliofn/rateDetail.action
+#All loans have either a 36- or 60-month term, with fixed interest rates and equal payments.
+#So we set the min 3yrs as actual term for charged off loans since those loans won't have a last_pymnt_d.
+
+ds$actualTerm <- ifelse(ds$loan_status=="Fully Paid", as.duration(ds$issue_d  %--% ds$last_pymnt_d)/dyears(1), 3)
+ggplot(ds, aes(x=grade, y=actualTerm)) + geom_boxplot()
+```
+
+```{r,ques_3d_iv}
+#3d(iv) What is 'recoveries'? Can we assume that recoveries are only for Charged_off loans? The data has multiple attributes on recoveries – what is the total amount of recoveries? For charged-off loans, does total_pymnt include recoveries ?
+
+```
+
+```{r,ques_3d_v}
+#3d(v) Calculate the annual return. Show how you calculate the percentage annual return. Is there any return from loans which are ‘charged off’? 
+#Explain. How does return from charged -off loans vary by loan grade? Compare the average return values with the average interest_rate on loans – do you notice any differences, and how do you explain this? How do returns vary by grade, and by sub-grade. If you wanted to invest in loans. Based on this data exploration, which loans would you invest in?
+
+# percentage Annual return = ((total paid amount - funded amount)/funded amount)/actual term * 100
+ds$actualReturn <- ifelse(ds$actualTerm>0, (((ds$total_pymnt-ds$funded_amnt)/ds$funded_amnt)/ds$actualTerm)*100,0)
+
+charged_off_loans <- ds[ds$loan_status=='Charged Off',]
+
+
+charged_off_loans[charged_off_loans$actualReturn>0,] %>% select(c(loan_amnt,total_pymnt,int_rate,installment,actualReturn)) %>% head()
+
+ggplot(charged_off_loans,aes(x=grade,y=actualReturn)) + geom_boxplot()
+ggplot(charged_off_loans,aes(x=sub_grade,y=actualReturn)) + geom_boxplot()
+
+#ggsave("3d_V_subgrade_vs_actualreturn_box.png",width=12,height=6) 
+temp_tbl <- ds %>% group_by(grade) %>% summarise(mean_actualRet = mean(actualReturn),mean_intrt = mean(int_rate))
+temp_tbl
+ggplot(temp_tbl, aes(x=mean_intrt, y=mean_actualRet)) + geom_point()+ geom_smooth(method=lm) + xlab("Mean Interest Rate") + ylab("Mean Annual returns (%)")
+
+ds %>% group_by(grade,sub_grade) %>% summarise(nLoans=n(), avgInterest= mean(int_rate), avgLoanAmt=mean(loan_amnt), avgActualRet=mean(actualReturn)*100)
+
+ds %>% group_by(loan_status) %>% summarise(avgInt=mean(int_rate),avgActRet = mean(actualReturn),avgTerm=mean(actualTerm))
+
+ds %>% summarise(nLoans=n(),avgInterest= mean(int_rate), avgLoanAmt=mean(loan_amnt), avgActualRet=mean(actualReturn)*100)
+```
+
+```{r,ques_3d_vi}
+#3d(vi)What are people borrowing money for (purpose)? Examine how many loans, average amounts, etc. by purpose? Do loan amounts vary by purpose? Do #defaults vary by purpose? Does loan-grade assigned by Lending Club vary by purpose?
+
+tbl4 <- ds %>% group_by(purpose) %>% summarise(nLoans=n(),defaults=sum(loan_status=="Charged Off"), defaultRate=defaults/nLoans,avgInterest=mean(int_rate), stdInterest=sd(int_rate), avgLoanAMt=mean(loan_amnt),avgPmnt=mean(total_pymnt)) 
+
+tbl4
+
+ggplot(tbl4, aes(x=purpose,y=avgLoanAMt,group=1)) + geom_line() + geom_point() + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+#ggsave("3d_vi_purpose_vs_loanamount_line.png",width=12,height=6)
+
+ggplot(ds, aes(x=purpose, y=loan_amnt)) + geom_boxplot() + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+#ggsave("3d_vi_purpose_vs_loanamount_boxplot.png",width=12,height=6)
+
+ggplot(ds, aes(fill=loan_status, x=purpose)) + geom_bar(position="fill") + ylab("defaults proportion (%)") + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+#ggsave("3d_vi_purpose_vs_loanstatus_bar.png",width=12,height=6) 
+
+table(ds$purpose,ds$grade)
+table(ds$purpose,ds$emp_length)
+ggplot(ds, aes(fill=grade, x=purpose)) + geom_bar()+theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+#ggsave("3_vi_purpose_vs_grade_bar.png",width=12,height=6) 
+```
+
+
+```{r,ques_3d_vii}
+#3d(vii) Consider some borrower characteristics like employment-length, annual-income, fico-scores (low, high). How do these relate to loan #attribute like, for example, loan_amout, loan_status, grade, purpose, actual return, etc.
+
+#Borrower Characteristics: Employment length, annual income
+
+sum(is.na(ds$emp_length))
+glimpse(ds$emp_length)
+
+ds %>% group_by(emp_length) %>% tally()
+
+#converting into factors
+ds$emp_length <- factor(ds$emp_length, levels=c("n/a", "< 1 year","1 year","2 years", "3 years" ,  "4 years",   "5 years",   "6 years",   "7 years" ,  "8 years", "9 years", "10+ years" ))
+
+table(ds$emp_length,ds$loan_status)
+round(100*prop.table(table(ds$emp_length,ds$loan_status)),digits=2)
+
+table(ds$emp_length,ds$grade)
+
+ggplot(ds,aes(x=emp_length,fill=grade)) + geom_bar()+facet_grid(~loan_status) 
+
+#ggsave("3d_vii_emplength_vs_grade_bar.png",width=14,height=6) 
+
+table(ds$purpose,ds$emp_length)
+ggplot(ds, aes(fill=purpose, x=emp_length)) + geom_bar()
+
+#ggsave("3d_vii_purpose_vs_emplength_bar.png",width=12,height=6) 
+
+ds %>% group_by(emp_length) %>% summarise(avg_loan_amnt=mean(loan_amnt),avg_act_ret=mean(actualReturn),avg_act_term=mean(actualTerm))
+
+sum(is.na(ds$annual_inc))
+summary(ds$annual_inc)
+
+ds %>% group_by(loan_status) %>% summarise(avg_AnnInc=mean(annual_inc))
+
+avg_anninc_by_grade <- ds %>% group_by(grade) %>% summarise(avg_AnnInc=mean(annual_inc))
+avg_anninc_by_grade
+ggplot(avg_anninc_by_grade, aes(x=grade,y=avg_AnnInc,group=1)) + geom_line() + geom_point()
+
+avg_anninc_by_pur <- ds %>% group_by(purpose) %>% summarise(avg_AnnInc=mean(annual_inc))
+avg_anninc_by_pur
+ggplot(avg_anninc_by_pur, aes(x=purpose,y=avg_AnnInc,group=1)) + geom_line() + geom_point() + theme(axis.text.x = element_text(angle = 90 , vjust = 0.5, hjust=1))
+
+#ggsave("3d_vii_purpose_vs_avg_anninc_line.png",width=12,height=6)
+```
+
+```{r,ques_3d_viii}
+#3d(viii) Generate some (at least 3) new derived attributes which you think may be useful for predicting default., and explain what these are. For #these, do an analyses as in the questions above (as reasonable based on the derived variables).
+
+#Derived attribute: proportion of satisfactory bankcard accounts 
+ds$satisBankcardAccts_prop <- ifelse(ds$num_bc_tl>0, ds$num_bc_sats/ds$num_bc_tl, 0)
+ 
+#Derived Attribute: length of borrower's history with LC
+ds$earliest_cr_line<-paste(ds$earliest_cr_line, "-01", sep = "")
+ds$earliest_cr_line<-parse_date_time(ds$earliest_cr_line, "myd")
+ds$borrHistory <- as.duration(ds$earliest_cr_line %--% ds$issue_d) /dyears(1)
+
+#Derived attribute: ratio of openAccounts to totalAccounts
+ds$openAccRatio <- ifelse(ds$total_acc>0, ds$open_acc/ds$total_acc, 0)
+
+#does LC-assigned loan grade vary by borrHistory?
+tbl2 <- ds %>% group_by(grade) %>% summarise(avgBorrHist=mean(borrHistory))
+tbl2
+ggplot(tbl2, aes(x=grade, y=avgBorrHist,group=1)) + geom_line() + geom_point()
+
+ds %>% group_by(loan_status) %>% summarise(avgBorrHist=mean(borrHistory))
+
+tbl3 <- ds %>% group_by(grade) %>% summarise(avgOpenAccRatio=mean(openAccRatio))
+tbl3
+ggplot(tbl3, aes(x=grade, y=avgOpenAccRatio,group=1)) + geom_line() + geom_point()
+
+ds %>% group_by(loan_status) %>% summarise(avgOpenAccRatio=mean(openAccRatio))
+
+
+tbl4 <- ds %>% group_by(grade) %>% summarise(avgSatisBankCard_prop=mean(satisBankcardAccts_prop))
+tbl4
+ggplot(tbl4, aes(x=grade, y=avgSatisBankCard_prop,group=1)) + geom_line() + geom_point()
+
+ds %>% group_by(loan_status) %>% summarise(avgSatisBankCard_prop=mean(satisBankcardAccts_prop))
+```
+
+```{r, ques_3e}
+#What is the proportion of missing values in different variables? Explain how you will handle missing values for different variables. You should consider what the variable is about, and what missing values may arise from – for example, a variable monthsSinceLastDeliquency may have no value for someone who has not yet had a delinquency; what is a sensible value to replace the missing values in this case? Are there some variables you will exclude from your model due to missing values?
+
+#Check for missing values & drop variables with all empty values
+is.na(ds) 
+
+colnames(ds)[colSums(is.na(ds)) > 0]
+
+allmiss <- apply(ds,2, function(x)all(is.na(x)));  
+colallmiss <-names(allmiss[allmiss>0]);    
+print(colallmiss)
+
+ds <- ds %>% select_if(function(x){ ! all(is.na(x)) } )
+dim(ds)
+
+# Find remaining cols containing missing values and total amount  
+names(ds)[colSums(is.na(ds)) > 0]
+colSums ( is.na( ds ) )
+
+# Calculate missing value proportions
+colMeans(is.na(ds))[colMeans(is.na(ds))>0]
+
+# Summarize variables by different values taken and compare variables with the same proportion of NA: open_acc_6m & open_act_il both have 97% missing 
+summary(as.factor(ds$open_acc_6m))
+table(ds$open_acc_6m)
+
+summary(as.factor(ds$open_act_il))
+table(ds$open_act_il)
+
+# Show & replace missing values, & replace by loan_status
+table(replace_na(ds$open_acc_6m, "missing"))
+
+table(ds$loan_status, replace_na(ds$open_acc_6m, "missing"))
+
+# Generate plot of remaining missing values 
+cc<-table(ds$loan_status, replace_na(ds$open_acc_6m, "missing") )
+barplot(cc, col=c("darkblue","red"),legend = rownames(cc))
+
+# Display proportion of ChargedOff as cc[1,]/(cc[2,]+cc[1,])
+barplot(cc[1,]/(cc[2,]+cc[1,]), legend = rownames(cc), ylab = "prop ChargedOff", main="Prop ChargedOff by open_acc_6m")
+
+# Variable annual_inc_joint
+cc<-table(ds$loan_status, replace_na(ds$annual_inc_joint, "missing") )
+cc[1,]/(cc[2,]+cc[1,])
+# The proportion of defaults for 'missing' does not seem to correspond to large or small values, so it should not be excluded or replaced
+
+# 50% of values are missing for mths_since_last_delinq...
+cc<-table(ds$loan_status, replace_na(ds$mths_since_last_delinq, "missing") )
+cc[1,]/(cc[2,]+cc[1,])
+# 10% of values are missing for mths_since_recent_inq...
+cc<-table(ds$loan_status, replace_na(ds$mths_since_recent_inq, "missing") )
+cc[1,]/(cc[2,]+cc[1,])
+
+# Drop variables with > 60% missing values
+nm<-names(ds)[colMeans(is.na(ds))>0.6]
+ds <- ds %>% select(-all_of(nm))
+
+# Calculate missing values for remaining variables & summarize data
+colMeans(is.na(ds))[colMeans(is.na(ds))>0]
+
+nm<- names(ds)[colSums(is.na(ds))>0]
+summary(ds[, nm])
+
+# Considering DT based models: can we retain variables which have some (not too many) missing values? Replace missing values with the median for bc_open_to_buy in temporary data set lcx containing attributes with missing values
+lcx <-ds[, c(nm)]
+lcx<- ds %>% replace_na(list(bc_open_to_buy=median(lcx$bc_open_to_buy, na.rm=TRUE)))
+
+# If median replacement works, try it on original data set
+ds <- ds %>% replace_na(list(mths_since_last_delinq=-500, bc_open_to_buy=median(ds$bc_open_to_buy, na.rm=TRUE), mo_sin_old_il_acct=1000, mths_since_recent_bc=1000, mths_since_recent_inq=50, num_tl_120dpd_2m = median(ds$num_tl_120dpd_2m, na.rm=TRUE),percent_bc_gt_75 = median(ds$percent_bc_gt_75, na.rm=TRUE), bc_util=median(ds$bc_util, na.rm=TRUE) ))
+# Replacement values for missings are reasonable
+
+# Check remaining missing values
+colMeans(is.na(ds))[colMeans(is.na(ds))>0]
+# 34 variables remain that have missing values
+nm<-names(ds)[colMeans(is.na(ds))>0]
+glimpse(ds %>% select(nm))
+
+# Replace few remaining missing values by column median in lcx sample data set
+lcx <- ds
+lcx<- lcx %>% mutate_if(is.numeric,  ~ifelse(is.na(.x), median(.x, na.rm = TRUE), .x))
+# Replace few remaining missing values by column median in ds actual data set
+ds<- ds %>% mutate_if(is.numeric,  ~ifelse(is.na(.x), median(.x, na.rm = TRUE), .x))
+
+# 93 remaining variables
+dim(ds)
+```
+
+```{r, ques_3f}
+#Describe how a boxplot identifies outliers. Would you use this approach here (or, should outliers be determined based on data specifics and application context (leading question)? If you do choose to remove outliers, explain what you do, and how this affects your data. 
+
+# Variable summaries for numeric
+summary(ds)
+ds %>% select_if(is.numeric) %>% summary()   
+
+# Boxplots to assess outliers
+ggplot(ds, aes( x = loan_amnt)) + geom_boxplot(aes(fill=grade))
+
+ggplot(ds, aes( x = annual_inc)) + geom_boxplot()
+ggplot(ds, aes( x = loan_amnt)) + geom_boxplot(aes(fill=loan_status))
+
+# For boxplots, values higher or lower than [25%Q -1.5*IRQ, 75%Q + 1.5*IQR] are outliers
+
+# Consider annual_inc, annual_inc_joint, and annRet
+summary(ds$annual_inc)
+summary(ds$annual_inc_joint)
+summary(ds$total_pymnt)
+
+# Consider incomes > $1.5M outliers...
+ds %>% filter(annual_inc >1500000) %>% count()
+
+# Are high income values and total payments associated with paid-off or charged-off loans?
+ggplot(ds, aes( x = annual_inc)) + geom_boxplot(aes(fill=loan_status))
+ggplot(ds, aes( x = total_pymnt)) + geom_boxplot(aes(fill=loan_status))
+
+# Removing annual_inc outliers... how does that affect loan_status?   
+ds <- ds %>% filter(annual_inc <= 1500000)
+ggplot(ds, aes( x = annual_inc)) + geom_boxplot(aes(fill=loan_status))
+
+# Consider revol_util
+summary(ds$revol_util)
+boxplot(ds$revol_util)
+# Identify outliers by boxplot method
+out_revut <- boxplot(ds$revol_util, plot=FALSE)$out
+length(out_revut)
+# Find & view row #s of outliers
+#out_revut_num <-which(ds$revol_util %in% out_ru)
+#ds[out_revut_num,] %>%  view()
+# Remove outliers 
+#ds <- ds_m [-out_ru_i, ]
+```
+
+```{r, ques_4}
+#Consider the potential for data leakage. You do not want to include variables in your model which may not be available when applying the model; that is, some data may not be available for new loans before they are funded. Leakage may also arise from variables in the data which may have been updated during the loan period (ie., after the loan is funded). Identify and explain which variables will you exclude from the model for leakage considerations, and explain why. 
+
+summary(ds)
+ggplot(ds, aes( x = loan_amnt)) + geom_histogram(aes(fill=grade))
+ggplot(ds, aes( x = loan_amnt)) + geom_boxplot(aes(fill=grade))
+
+# Drop some variable/columns which are not useful or which we will not use in developing predictive models
+# Drop variables those which will cause LEAKAGE!!
+
+# Identify the variables you want to remove
+varsToRemove = c('funded_amnt_inv', 'term', 'emp_title', 'pymnt_plan', 'earliest_cr_line', 'title', 'zip_code', 'addr_state', 'out_prncp', 'out_prncp_inv', 'total_pymnt_inv', 'total_rec_prncp', 'total_rec_int', 'total_rec_late_fee', 'recoveries', 'collection_recovery_fee', 'last_credit_pull_d', 'policy_code', 'disbursement_method', 'debt_settlement_flag', 'application_type')
+ 
+# What about variables like last_pymnt_d, last_pymnt_amnt, next_pymnt_d, deferral_term, payment_plan_start_date, debt_settlement_flag_date  - should you remove these too?
+
+# Drop them from the ds data-frame
+ds <- ds %>% select(-all_of(varsToRemove))  
+
+# Drop all the variables with names starting with "hardship" -- can cause leakage?
+ds <- ds %>% select(-starts_with("hardship"))
+
+# Similarly, all variable starting with "settlement"
+ds <- ds %>% select(-starts_with("settlement"))
+
+# Are there some additional variables to drop -- which we will not use in following analyses? 
+varsToRemove2 <- c("last_pymnt_d", "last_pymnt_amnt", "issue_d")
+ds <- ds %>% select(-all_of(varsToRemove2))
+```
+
+```{r, ques_5}
+#Do a univariate analyses to determine which variables (from amongst those you decide to consider for the next stage prediction task) will be individually useful for predicting the dependent variable (loan_status). For this, you need a measure of relationship between the dependent variable and each of the potential predictor variables. Given loan-status as a binary dependent variable, which measure will you use? From your analyses using this measure, which variables do you think will be useful for predicting loan_status? (Note – if certain variables on their own are highly predictive of the outcome, it is good to ask if this variable has a leakage issue).
+
+```
+
+```{r, ques_6a}
+# Split the data into training and validation sets. What proportions do you consider, why?
+library(ranger)
+library(rpart)
+library(C50)
+library(pROC)
+library(caret)
+library(ROCR)
+
+TRNPROP = 0.5  #proportion of examples in the training sample
+
+nr<-nrow(ds)
+trnIndex<- sample(1:nr, size = round(TRNPROP * nr), replace=FALSE)
+
+lcdfTrn <- ds[trnIndex, ]
+lcdfTst <- ds[-trnIndex, ]
+#To split the data, we considered several variables.
+#rgModel1 <- ranger(loan_status~., data=lcdfTrn%>% select(-c(actualTerm, actualReturn, total_pymnt)), #num.trees=200, importance='permutation', probability=TRUE)
+
+#build a tree model
+c5_DT1 <- c5_DT1 <- C5.0(loan_status ~., data=lcdfTrn %>%  select(-all_of(varsOmit)),  control=C5.0Control(minCases=30))
+
+#model details
+summary(c5_DT1)
+
+#You may find that the tree has only one root node --- why?
+#Is it maybe due to the class imbalance in the data
+lcdfTrn %>% group_by(loan_status) %>% tally()
+   #show about 6 times more 'Fully Paid' than 'Charged Off' loans
+
+#To consider a more balanced data for building the tree, C%.0 has a 'weights' parameter - this can specify a vector of weights for each example
+#Suppose we want to weight the 'Charged Off' examples as 6, and 'Fully Paid' examples as 1
+caseWeights <- ifelse(lcx$loan_status=="Charged Off", 6, 1)
+
+#Then use these caseWeights in the C5.0 function
+c5_DT1 <- C5.0(loan_status ~., data=lcdfTrn %>%  select(-all_of(varsOmit)), weights = caseWeights, control=C5.0Control(minCases=30))
+
+summary(c5_DT1)
+
+predTrn <- predict(c5_DT1, lcdfTrn, type='prob')
+head(predTrn)
+   #this show two columns,  with scores ('prob') for each class label
+
+CTHRESH=0.5
+table(pred = predTrn[,'Fully Paid' ] > CTHRESH, true=lcdfTrn$loan_status)
+
+predTst <- predict(c5_DT1, lcdfTst, type='prob')
+table(pred = predTst[,'Fully Paid' ] > CTHRESH, true=lcdfTst$loan_status)
+
+
+#Rules
+c5_rules1 <- C5.0(loan_status ~., data=lcdfTrn %>%  select(-all_of(varsOmit)), weights = caseWeights, rules=TRUE, control=C5.0Control(minCases=30))
+
+summary(c5_rules1)
+
+predTrn <- predict(c5_DT1, lcdfTrn, type='class')
+confusionMatrix(predTrn, lcdfTrn$loan_status)
+```
+
+```{r, ques_6b}
+#Train decision tree models (use both rpart, c50) Remember - if the model performance looks “too” good, it may be due to leakage – make sure you check to ensure that none of the variables used in modeling have leakage problems. Look at variable importance in the models – any leakage causing variables will typically be among the most important. In building decision tree models, what parameters do you experiment with, and what performance do you obtain (on training and validation sets)? Clearly tabulate performance for different parameter settings, and briefly describe your findings. For evaluation of models, you should include confusion matrix related measures, as well as ROC analyses and lifts. Explain which performance measures you focus on, and why. 
+
+#Do you want to use all the variables in the dataset as predictors ?
+#Take a look at teh data
+glimpse(ds)
+
+# Are are some variable you want to exclude  - due to leakage, or other reasons?
+# What about variables like actualTerm, actualReturn, ... which you calculated?
+# These will be useful in performance assessment, but should not be used in building the model.
+#Are there any data variables which you may not want to use in developing the model?
+
+varsOmit <- c('actualTerm', 'actualReturn', 'total_pymnt')  #are there others?
+#Check of the target, loan_status, is a factor variable -- if not, convert to  a factor variable
+#lcdf$loan_status <- factor(lcdf$loan_status, levels=c("Fully Paid", "Charged Off"))
+lcDT1 <- rpart(loan_status ~., data=lcdfTrn %>% select(-all_of(varsOmit)), method="class", parms = list(split = "information"), control = rpart.control(minsplit = 30))
+printcp(lcDT1)  #reasonable ?  (If the tree does not grow at all, maybe set a lower value of cp?)
+
+#variable importance
+lcDT1$variable.importance
+  # Does this look reasonable?  Any leakage causing variables can show up as highly important!!
+  #  Make sure you remove any leakage variables (include in varsOmit above)
+
+lcDT1 <- rpart(loan_status ~., data=lcdfTrn %>% select(-all_of(varsOmit)), method="class", parms = list(split = "information"), control = rpart.control(cp=0.0001, minsplit = 50))
+
+#Do we want to prune the tree -- check for performance with different cp levels
+printcp(lcDT1)
+lcDT1p<- prune.rpart(lcDT1, cp=0.0003)   
+     #Note: this value of cp used here is just as an example. You should select the best cp value based on rpart cpTable 
+
+
+#Training the model considering a more balanced training dataset?
+#Use the 'prior' parameters -- to account for unbalanced training data
+#The 'prior' parameter can be used to specify the distribution of examples across classes.  By default, the prior is taken from the dataset
+#For rpart to consider a balanced distribution:
+lcDT1b <- rpart(loan_status ~., data=lcdfTrn %>% select(-all_of(varsOmit)), 
+method="class", parms = list(split = "gini", prior=c(0.5, 0.5)), 
+control = rpart.control(cp=0.0, minsplit = 20, minbucket = 10, maxdepth = 20,  xval=10) )
+
+#Evaluate performance
+predTrn=predict(lcDT1,lcdfTrn, type='class')
+table(pred = predTrn, true=lcdfTrn$loan_status)
+mean(predTrn == lcdfTrn$loan_status)
+table(pred = predict(lcDT1,lcdfTst, type='class'), true=lcdfTst$loan_status)
+mean(predict(lcDT1,lcdfTst, type='class') ==lcdfTst$loan_status)
+
+#With a different classification threshold
+CTHRESH=0.3
+predProbTrn=predict(lcDT1,lcdfTrn, type='prob')
+predTrnCT = ifelse(predProbTrn[, 'Charged Off'] > CTHRESH, 'Charged Off', 'Fully Paid')
+table(predTrnCT , true=lcdfTrn$loan_status)
+# Or, to set the predTrnCT values as factors, and then get the confusion matrix
+table(predictions=factor(predTrnCT, levels=c("Fully Paid", "Charged Off")), actuals=lcdfTrn$loan_status)
+
+#Or you can use the confusionMatrix function from the caret package
+confusionMatrix(predTrn, lcdfTrn$loan_status)
+#if you get an error saying that the 'e1071' package is required, you should install and load that too. Notice that the output says 'Positive' class: Fully Paid. So,the confusionMatrix based performance measures are based on the "Fully Paid" class as the class of interest. If you want to get performance measure for "Charged Off", use the positive- paremeter
+confusionMatrix(predTrn, lcdfTrn$loan_status, positive="Charged Off")
+
+#ROC plot
+score=predict(lcDT1,lcdfTst, type="prob")[,"Charged Off"]
+pred=prediction(score, lcdfTst$loan_status, label.ordering = c("Fully Paid", "Charged Off"))
+    #label.ordering here specifies the 'negative', 'positive' class labels   
+
+#ROC curve
+aucPerf <-performance(pred, "tpr", "fpr")
+plot(aucPerf)
+abline(a=0, b= 1)
+
+#AUC value
+aucPerf=performance(pred, "auc")
+aucPerf@y.values
+
+#Lift curve
+liftPerf <-performance(pred, "lift", "rpp")
+plot(liftPerf)
+```
+
+```{r, ques_6c}
+#Identify the best tree model. Why do you consider it best? Describe this model – in terms of complexity (size). Examine variable importance. How does this relate to your uni-variate analyses in Question 5 above? Briefly describe how variable importance is obtained (the process used in your best decision tree – note that the approach is not the same for rpart and C50). 
+
+# Variable importance
+lcDT1$variable.importance
+```
+
+```{r, ques_7}
+#Develop a random forest model. (Note the ‘ranger’ library can give faster computations) What parameters do you experiment with, and does this affect performance? Describe the best model in terms of number of trees, performance, variable importance. Compare the performance of random forest and best decision tree model from the previous question. Do you find the importance of variables to be similar/different? Which model would you prefer, and why?
+thresh = 0.7
+set.seed(213)
+trn_split<- sample(1:nrow(ds), size = round(thresh * nrow(ds)), replace=FALSE)
+vars_to_omit <- c('total_pymnt','actualTerm', 'actualReturn')
+train_ds <- ds[trn_split, ]
+test_ds <- ds[-trn_split, ]
+
+
+rf_model <- ranger(loan_status ~ .,data=train_ds)
+
+#On Validation
+test_preds<-predict(rf_model,],type='response')$predictions
+test_preds_conv <- ifelse(test_preds[,"Charged Off"] > 0.5,"Charged Off","Fully Paid")
+confusionMatrix(factor(test_preds_conv,levels=c("Charged Off","Fully Paid")),test_ds$loan_status,positive = "Charged Off")
+
+test_preds_ <- test_preds[,'Charged Off']
+pred=prediction(test_preds_, test_ds$loan_status, label.ordering = c("Fully Paid", "Charged Off"))  #label.ordering = (negative class, positive class)
+
+#ROC curve
+roc_curve_rf <-performance(pred, "tpr", "fpr")
+plot(roc_curve_rf)
+abline(a=0, b= 1)
+#AUC value
+auc_score<-performance(pred, "auc")
+auc_score@y.values
+#Lift curve
+liftPerf_rf <-performance(pred, "lift", "rpp")
+plot(liftPerf_rf)
+
+
+```
