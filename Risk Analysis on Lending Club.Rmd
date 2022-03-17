@@ -1,0 +1,1224 @@
+---
+---
+```{r, import_libraries}
+library(tidyverse)
+library(dplyr)
+library(lubridate)
+library(broom)
+```
+
+
+```{r, read_data}
+ds <- read.csv("C:/Users/kcheru3/Downloads/lcdatasample.csv", header=TRUE)
+
+View(ds)
+glimpse(ds)
+#There are a total of 100000 rows and 144 variables.
+#loan_status is the target variable.
+sapply(ds, function(x) sum(is.na(x)))
+```
+
+
+```{r, }
+#Take a look at the data attributes. How would you categorize these attributes, in broad terms, considering what they pertain to? What are attribute types - which are numeric, categorical, and date variables? What do you think will be the important attributes to consider for your decision task? Which attributes do you think will help determine performance?
+
+ds_attr <- attributes(ds)
+str(ds)
+```
+
+
+```{r, }
+#Examine the attributes which you think will be useful in your analyses and modeling. Obtain data descriptions, and develop some plots to visualize the data. Summarize your observations (you answer should be more than just the figures and plots – what is the ‘story’ from your initial observations)
+
+  #Loan status values & restriction to "Fully Paid" or "Charged Off" 
+ds %>% group_by(loan_status) %>% tally()
+ds <- ds %>% filter (loan_status == "Fully Paid" | loan_status == "Charged Off")
+  
+  #How does loan status vary by loan grade and loan purpose
+ds %>% group_by(loan_status, grade) %>% tally()
+table(ds$loan_status, ds$grade)
+
+table(ds$loan_status, ds$purpose)
+
+  #How does number of loans, loan amount, interest rate vary by grade
+ds %>% group_by(grade) %>% summarise(mean(int_rate), mean(loan_amnt), n())
+
+  #Plot loan amount and total payment
+ggplot(ds, aes( x = loan_amnt)) + geom_histogram(aes(fill=grade))
+ggplot(ds, aes( x = loan_amnt)) + geom_boxplot(aes(fill=grade))
+
+ggplot(ds, aes( x = total_pymnt)) + geom_histogram(aes(fill=grade))
+ggplot(ds, aes( x = total_pymnt)) + geom_boxplot(aes(fill=grade))
+```
+
+
+```{r, }
+#What are the values for loan_status ? Are there values other than “fully paid”, “charged off” ? We want to restrict attention to “fully paid” and “charged off” loans, so, other values should be removed.What is the proportion of defaults (‘charged off’ vs ‘fully paid’ loans) in the data? How does default rate vary with loan grade? Does it vary with sub-grade? And is this what you would expect, and why?
+
+# How many loans are there in each grade? And do loan amounts vary by grade? Does interest rate for loans vary with grade, subgrade? Look at #the average, standard-deviation, min and max of interest rate by grade and subgrade. Is this what you expect, and why?
+  
+tbl <- ds %>% group_by(loan_status) %>% tally()
+ggplot(ds, aes(x = loan_status)) + geom_bar()
+
+tbl3 <- ds %>% group_by(loan_status) %>% count() %>% ungroup() %>% mutate(per=`n`/sum(`n`)) %>% arrange(desc(loan_status))
+tbl3$label <- round(tbl3$per*100,2)
+ggplot(data=tbl3)+geom_bar(aes(x="", y=per, fill=loan_status), stat="identity", width = 1)+ coord_polar("y",start=0)+geom_text(aes(x=1, y = cumsum(per) - per/2, label=label)) + xlab("")+ylab("")
+
+round(100*prop.table(table(ds$loan_status)),digits=2)
+
+ds %>% group_by(grade) %>% tally()
+
+table(ds$loan_status,ds$grade)
+table(ds$loan_status,ds$sub_grade)
+
+ggplot(ds, aes(fill=loan_status,x = grade)) + geom_bar(position="fill") + ylab("defaults proportion (%)")
+
+
+ds %>% group_by(grade) %>% summarise(sum(loan_amnt))
+ds %>% group_by(grade) %>% summarise(mean(loan_amnt))
+
+ggplot(ds,aes(x=loan_amnt))+geom_histogram(aes(fill=grade))+facet_grid(~loan_status)
+
+ggplot(ds, aes(x=grade, y=int_rate)) + geom_boxplot()
+
+avgInt_tb_by_grade <- ds %>% group_by(grade) %>% summarise(avgInt_rate=mean(int_rate))
+avgInt_tb_by_grade
+
+avgInt_tb_by_subgrade <- ds %>% group_by(sub_grade) %>% summarise(avgInt_rate=mean(int_rate))
+avgInt_tb_by_subgrade
+
+ggplot(avgInt_tb_by_grade, aes(x=grade,y=avgInt_rate,group=1)) + geom_line() + geom_point()
+
+ggplot(avgInt_tb_by_subgrade, aes(x=sub_grade,y=avgInt_rate,group=1)) + geom_line() + geom_point()
+
+ds %>% group_by(grade) %>% summarise(nLoans=n(),defaults=sum(loan_status=="Charged Off"), defaultRate=defaults/nLoans,minInterest = min(int_rate), maxInterest=max(int_rate),avgInterest=mean(int_rate), stdInterest=sd(int_rate), avgLoanAMt=mean(loan_amnt),avgPmnt=mean(total_pymnt))
+
+ds %>% group_by(sub_grade) %>% summarise(nLoans=n(),defaults=sum(loan_status=="Charged Off"), defaultRate=defaults/nLoans,minInterest = min(int_rate), maxInterest=max(int_rate),avgInterest=mean(int_rate), stdInterest=sd(int_rate), avgLoanAMt=mean(loan_amnt),avgPmnt=mean(total_pymnt))
+```
+
+```{r, }
+# For loans which are fully paid back, how does the time-to-full-payoff vary? For this, calculate the ‘actual term’ (issue-date to #last-payment-date) for all loans. How does this actual-term vary by loan grade (a box-plot can help visualize this).
+
+#sum(is.na(ds$issue_d))
+#sum(is.na(ds$last_pymnt_d))
+#sum(is.na(ds[ds$loan_status=='Charged Off',]$last_pymnt_d))
+
+ds$last_pymnt_d<-paste(ds$last_pymnt_d, "-01", sep = "")
+ds$last_pymnt_d<-parse_date_time(ds$last_pymnt_d,  "myd")
+
+#https://www.lendingclub.com/foliofn/rateDetail.action
+#All loans have either a 36- or 60-month term, with fixed interest rates and equal payments.
+#So we set the min 3yrs as actual term for charged off loans since those loans won't have a last_pymnt_d.
+
+ds$actualTerm <- ifelse(ds$loan_status=="Fully Paid", as.duration(ds$issue_d  %--% ds$last_pymnt_d)/dyears(1), 3)
+ggplot(ds, aes(x=grade, y=actualTerm)) + geom_boxplot()
+```
+
+
+
+```{r,}
+# Calculate the annual return. Show how you calculate the percentage annual return. Is there any return from loans which are ‘charged off’? 
+#Explain. How does return from charged -off loans vary by loan grade? Compare the average return values with the average interest_rate on loans – do you notice any differences, and how do you explain this? How do returns vary by grade, and by sub-grade. If you wanted to invest in loans. Based on this data exploration, which loans would you invest in?
+
+# percentage Annual return = ((total paid amount - funded amount)/funded amount)/actual term * 100
+ds$actualReturn <- ifelse(ds$actualTerm>0, (((ds$total_pymnt-ds$funded_amnt)/ds$funded_amnt)/ds$actualTerm)*100,0)
+
+charged_off_loans <- ds[ds$loan_status=='Charged Off',]
+
+
+charged_off_loans[charged_off_loans$actualReturn>0,] %>% select(c(loan_amnt,total_pymnt,int_rate,installment,actualReturn)) %>% head()
+
+ggplot(charged_off_loans,aes(x=grade,y=actualReturn)) + geom_boxplot()
+ggplot(charged_off_loans,aes(x=sub_grade,y=actualReturn)) + geom_boxplot()
+
+#ggsave("3d_V_subgrade_vs_actualreturn_box.png",width=12,height=6) 
+temp_tbl <- ds %>% group_by(grade) %>% summarise(mean_actualRet = mean(actualReturn),mean_intrt = mean(int_rate))
+temp_tbl
+ggplot(temp_tbl, aes(x=mean_intrt, y=mean_actualRet)) + geom_point()+ geom_smooth(method=lm) + xlab("Mean Interest Rate") + ylab("Mean Annual returns (%)")
+
+ds %>% group_by(grade,sub_grade) %>% summarise(nLoans=n(), avgInterest= mean(int_rate), avgLoanAmt=mean(loan_amnt), avgActualRet=mean(actualReturn)*100)
+
+ds %>% group_by(loan_status) %>% summarise(avgInt=mean(int_rate),avgActRet = mean(actualReturn),avgTerm=mean(actualTerm))
+
+ds %>% summarise(nLoans=n(),avgInterest= mean(int_rate), avgLoanAmt=mean(loan_amnt), avgActualRet=mean(actualReturn)*100)
+```
+
+```{r,}
+#What are people borrowing money for (purpose)? Examine how many loans, average amounts, etc. by purpose? Do loan amounts vary by purpose? Do #defaults vary by purpose? Does loan-grade assigned by Lending Club vary by purpose?
+
+tbl4 <- ds %>% group_by(purpose) %>% summarise(nLoans=n(),defaults=sum(loan_status=="Charged Off"), defaultRate=defaults/nLoans,avgInterest=mean(int_rate), stdInterest=sd(int_rate), avgLoanAMt=mean(loan_amnt),avgPmnt=mean(total_pymnt)) 
+
+tbl4
+
+ggplot(tbl4, aes(x=purpose,y=avgLoanAMt,group=1)) + geom_line() + geom_point() + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+#ggsave("3d_vi_purpose_vs_loanamount_line.png",width=12,height=6)
+
+ggplot(ds, aes(x=purpose, y=loan_amnt)) + geom_boxplot() + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+#ggsave("3d_vi_purpose_vs_loanamount_boxplot.png",width=12,height=6)
+
+ggplot(ds, aes(fill=loan_status, x=purpose)) + geom_bar(position="fill") + ylab("defaults proportion (%)") + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+#ggsave("3d_vi_purpose_vs_loanstatus_bar.png",width=12,height=6) 
+
+table(ds$purpose,ds$grade)
+table(ds$purpose,ds$emp_length)
+ggplot(ds, aes(fill=grade, x=purpose)) + geom_bar()+theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+#ggsave("3_vi_purpose_vs_grade_bar.png",width=12,height=6) 
+```
+
+
+```{r,}
+# Consider some borrower characteristics like employment-length, annual-income, fico-scores (low, high). How do these relate to loan #attribute like, for example, loan_amout, loan_status, grade, purpose, actual return, etc.
+
+#Borrower Characteristics: Employment length, annual income
+
+sum(is.na(ds$emp_length))
+glimpse(ds$emp_length)
+
+ds %>% group_by(emp_length) %>% tally()
+
+#converting into factors
+ds$emp_length <- factor(ds$emp_length, levels=c("n/a", "< 1 year","1 year","2 years", "3 years" ,  "4 years",   "5 years",   "6 years",   "7 years" ,  "8 years", "9 years", "10+ years" ))
+
+table(ds$emp_length,ds$loan_status)
+round(100*prop.table(table(ds$emp_length,ds$loan_status)),digits=2)
+
+table(ds$emp_length,ds$grade)
+
+ggplot(ds,aes(x=emp_length,fill=grade)) + geom_bar()+facet_grid(~loan_status) 
+
+
+table(ds$purpose,ds$emp_length)
+ggplot(ds, aes(fill=purpose, x=emp_length)) + geom_bar()
+
+
+ds %>% group_by(emp_length) %>% summarise(avg_loan_amnt=mean(loan_amnt),avg_act_ret=mean(actualReturn),avg_act_term=mean(actualTerm))
+
+sum(is.na(ds$annual_inc))
+summary(ds$annual_inc)
+
+ds %>% group_by(loan_status) %>% summarise(avg_AnnInc=mean(annual_inc))
+
+avg_anninc_by_grade <- ds %>% group_by(grade) %>% summarise(avg_AnnInc=mean(annual_inc))
+avg_anninc_by_grade
+ggplot(avg_anninc_by_grade, aes(x=grade,y=avg_AnnInc,group=1)) + geom_line() + geom_point()
+
+avg_anninc_by_pur <- ds %>% group_by(purpose) %>% summarise(avg_AnnInc=mean(annual_inc))
+avg_anninc_by_pur
+ggplot(avg_anninc_by_pur, aes(x=purpose,y=avg_AnnInc,group=1)) + geom_line() + geom_point() + theme(axis.text.x = element_text(angle = 90 , vjust = 0.5, hjust=1))
+
+
+```
+
+```{r,}
+# Generate some (at least 3) new derived attributes which you think may be useful for predicting default., and explain what these are. For #these, do an analyses as in the questions above (as reasonable based on the derived variables).
+
+#Derived attribute: proportion of satisfactory bankcard accounts 
+ds$satisBankcardAccts_prop <- ifelse(ds$num_bc_tl>0, ds$num_bc_sats/ds$num_bc_tl, 0)
+ 
+#Derived Attribute: length of borrower's history with LC
+ds$earliest_cr_line<-paste(ds$earliest_cr_line, "-01", sep = "")
+ds$earliest_cr_line<-parse_date_time(ds$earliest_cr_line, "myd")
+ds$borrHistory <- as.duration(ds$earliest_cr_line %--% ds$issue_d) /dyears(1)
+
+#Derived attribute: ratio of openAccounts to totalAccounts
+ds$openAccRatio <- ifelse(ds$total_acc>0, ds$open_acc/ds$total_acc, 0)
+
+#does LC-assigned loan grade vary by borrHistory?
+tbl2 <- ds %>% group_by(grade) %>% summarise(avgBorrHist=mean(borrHistory))
+tbl2
+ggplot(tbl2, aes(x=grade, y=avgBorrHist,group=1)) + geom_line() + geom_point()
+
+ds %>% group_by(loan_status) %>% summarise(avgBorrHist=mean(borrHistory))
+
+tbl3 <- ds %>% group_by(grade) %>% summarise(avgOpenAccRatio=mean(openAccRatio))
+tbl3
+ggplot(tbl3, aes(x=grade, y=avgOpenAccRatio,group=1)) + geom_line() + geom_point()
+
+ds %>% group_by(loan_status) %>% summarise(avgOpenAccRatio=mean(openAccRatio))
+
+
+tbl4 <- ds %>% group_by(grade) %>% summarise(avgSatisBankCard_prop=mean(satisBankcardAccts_prop))
+tbl4
+ggplot(tbl4, aes(x=grade, y=avgSatisBankCard_prop,group=1)) + geom_line() + geom_point()
+
+ds %>% group_by(loan_status) %>% summarise(avgSatisBankCard_prop=mean(satisBankcardAccts_prop))
+```
+
+```{r, }
+#What is the proportion of missing values in different variables? Explain how you will handle missing values for different variables. You should consider what the variable is about, and what missing values may arise from – for example, a variable monthsSinceLastDeliquency may have no value for someone who has not yet had a delinquency; what is a sensible value to replace the missing values in this case? Are there some variables you will exclude from your model due to missing values?
+
+#Check for missing values & drop variables with all empty values
+is.na(ds) 
+
+colnames(ds)[colSums(is.na(ds)) > 0]
+
+allmiss <- apply(ds,2, function(x)all(is.na(x)));  
+colallmiss <-names(allmiss[allmiss>0]);    
+print(colallmiss)
+
+ds <- ds %>% select_if(function(x){ ! all(is.na(x)) } )
+dim(ds)
+
+# Find remaining cols containing missing values and total amount  
+names(ds)[colSums(is.na(ds)) > 0]
+colSums ( is.na( ds ) )
+
+# Calculate missing value proportions
+colMeans(is.na(ds))[colMeans(is.na(ds))>0]
+
+# Summarize variables by different values taken and compare variables with the same proportion of NA: open_acc_6m & open_act_il both have 97% missing 
+summary(as.factor(ds$open_acc_6m))
+table(ds$open_acc_6m)
+
+summary(as.factor(ds$open_act_il))
+table(ds$open_act_il)
+
+# Show & replace missing values, & replace by loan_status
+table(replace_na(ds$open_acc_6m, "missing"))
+
+table(ds$loan_status, replace_na(ds$open_acc_6m, "missing"))
+
+# Generate plot of remaining missing values 
+cc<-table(ds$loan_status, replace_na(ds$open_acc_6m, "missing") )
+barplot(cc, col=c("darkblue","red"),legend = rownames(cc))
+
+# Display proportion of ChargedOff as cc[1,]/(cc[2,]+cc[1,])
+barplot(cc[1,]/(cc[2,]+cc[1,]), legend = rownames(cc), ylab = "prop ChargedOff", main="Prop ChargedOff by open_acc_6m")
+
+# Variable annual_inc_joint
+cc<-table(ds$loan_status, replace_na(ds$annual_inc_joint, "missing") )
+cc[1,]/(cc[2,]+cc[1,])
+# The proportion of defaults for 'missing' does not seem to correspond to large or small values, so it should not be excluded or replaced
+
+# 50% of values are missing for mths_since_last_delinq...
+cc<-table(ds$loan_status, replace_na(ds$mths_since_last_delinq, "missing") )
+cc[1,]/(cc[2,]+cc[1,])
+# 10% of values are missing for mths_since_recent_inq...
+cc<-table(ds$loan_status, replace_na(ds$mths_since_recent_inq, "missing") )
+cc[1,]/(cc[2,]+cc[1,])
+
+# Drop variables with > 60% missing values
+nm<-names(ds)[colMeans(is.na(ds))>0.6]
+ds <- ds %>% select(-all_of(nm))
+
+# Calculate missing values for remaining variables & summarize data
+colMeans(is.na(ds))[colMeans(is.na(ds))>0]
+
+nm<- names(ds)[colSums(is.na(ds))>0]
+summary(ds[, nm])
+
+# Considering DT based models: can we retain variables which have some (not too many) missing values? Replace missing values with the median for bc_open_to_buy in temporary data set lcx containing attributes with missing values
+lcx <-ds[, c(nm)]
+lcx<- ds %>% replace_na(list(bc_open_to_buy=median(lcx$bc_open_to_buy, na.rm=TRUE)))
+
+# If median replacement works, try it on original data set
+ds <- ds %>% replace_na(list(mths_since_last_delinq=-500, bc_open_to_buy=median(ds$bc_open_to_buy, na.rm=TRUE), mo_sin_old_il_acct=1000, mths_since_recent_bc=1000, mths_since_recent_inq=50, num_tl_120dpd_2m = median(ds$num_tl_120dpd_2m, na.rm=TRUE),percent_bc_gt_75 = median(ds$percent_bc_gt_75, na.rm=TRUE), bc_util=median(ds$bc_util, na.rm=TRUE) ))
+# Replacement values for missings are reasonable
+
+# Check remaining missing values
+colMeans(is.na(ds))[colMeans(is.na(ds))>0]
+# 34 variables remain that have missing values
+nm<-names(ds)[colMeans(is.na(ds))>0]
+glimpse(ds %>% select(nm))
+
+# Replace few remaining missing values by column median in lcx sample data set
+lcx <- ds
+lcx<- lcx %>% mutate_if(is.numeric,  ~ifelse(is.na(.x), median(.x, na.rm = TRUE), .x))
+# Replace few remaining missing values by column median in ds actual data set
+ds<- ds %>% mutate_if(is.numeric,  ~ifelse(is.na(.x), median(.x, na.rm = TRUE), .x))
+
+# 93 remaining variables
+dim(ds)
+```
+
+```{r, }
+#Describe how a boxplot identifies outliers. Would you use this approach here (or, should outliers be determined based on data specifics and application context (leading question)? If you do choose to remove outliers, explain what you do, and how this affects your data. 
+
+# Variable summaries for numeric
+summary(ds)
+ds %>% select_if(is.numeric) %>% summary()   
+
+# Boxplots to assess outliers
+ggplot(ds, aes( x = loan_amnt)) + geom_boxplot(aes(fill=grade))
+
+ggplot(ds, aes( x = annual_inc)) + geom_boxplot()
+ggplot(ds, aes( x = loan_amnt)) + geom_boxplot(aes(fill=loan_status))
+
+# For boxplots, values higher or lower than [25%Q -1.5*IRQ, 75%Q + 1.5*IQR] are outliers
+
+# Consider annual_inc, annual_inc_joint, and annRet
+summary(ds$annual_inc)
+summary(ds$annual_inc_joint)
+summary(ds$total_pymnt)
+
+# Consider incomes > $1.5M outliers...
+ds %>% filter(annual_inc >1500000) %>% count()
+
+# Are high income values and total payments associated with paid-off or charged-off loans?
+ggplot(ds, aes( x = annual_inc)) + geom_boxplot(aes(fill=loan_status))
+ggplot(ds, aes( x = total_pymnt)) + geom_boxplot(aes(fill=loan_status))
+
+# Removing annual_inc outliers... how does that affect loan_status?   
+ds <- ds %>% filter(annual_inc <= 1500000)
+ggplot(ds, aes( x = annual_inc)) + geom_boxplot(aes(fill=loan_status))
+
+# Consider revol_util
+summary(ds$revol_util)
+boxplot(ds$revol_util)
+# Identify outliers by boxplot method
+out_revut <- boxplot(ds$revol_util, plot=FALSE)$out
+length(out_revut)
+# Find & view row #s of outliers
+#out_revut_num <-which(ds$revol_util %in% out_ru)
+#ds[out_revut_num,] %>%  view()
+# Remove outliers 
+#ds <- ds_m [-out_ru_i, ]
+```
+
+```{r, }
+#Consider the potential for data leakage. You do not want to include variables in your model which may not be available when applying the model; that is, some data may not be available for new loans before they are funded. Leakage may also arise from variables in the data which may have been updated during the loan period (ie., after the loan is funded). Identify and explain which variables will you exclude from the model for leakage considerations, and explain why. 
+
+summary(ds)
+ggplot(ds, aes( x = loan_amnt)) + geom_histogram(aes(fill=grade))
+ggplot(ds, aes( x = loan_amnt)) + geom_boxplot(aes(fill=grade))
+
+# Drop some variable/columns which are not useful or which we will not use in developing predictive models
+# Drop variables those which will cause LEAKAGE!!
+
+# Identify the variables you want to remove
+varsToRemove = c('funded_amnt_inv', 'term', 'emp_title', 'pymnt_plan', 'earliest_cr_line', 'title', 'zip_code', 'addr_state', 'out_prncp', 'out_prncp_inv', 'total_pymnt_inv', 'total_rec_prncp', 'total_rec_int', 'total_rec_late_fee', 'recoveries', 'collection_recovery_fee', 'last_credit_pull_d', 'policy_code', 'disbursement_method', 'debt_settlement_flag', 'application_type')
+ 
+# What about variables like last_pymnt_d, last_pymnt_amnt, next_pymnt_d, deferral_term, payment_plan_start_date, debt_settlement_flag_date  - should you remove these too?
+
+# Drop them from the ds data-frame
+ds <- ds %>% select(-all_of(varsToRemove))  
+
+# Drop all the variables with names starting with "hardship" -- can cause leakage?
+ds <- ds %>% select(-starts_with("hardship"))
+
+# Similarly, all variable starting with "settlement"
+ds <- ds %>% select(-starts_with("settlement"))
+
+# Are there some additional variables to drop -- which we will not use in following analyses? 
+varsToRemove2 <- c("last_pymnt_d", "last_pymnt_amnt", "issue_d")
+ds <- ds %>% select(-all_of(varsToRemove2))
+```
+
+
+
+```{r, }
+# Split the data into training and validation sets. What proportions do you consider, why?
+library(ranger)
+library(rpart)
+library(C50)
+library(pROC)
+library(caret)
+library(ROCR)
+
+TRNPROP = 0.5  #proportion of examples in the training sample
+
+nr<-nrow(ds)
+trnIndex<- sample(1:nr, size = round(TRNPROP * nr), replace=FALSE)
+
+lcdfTrn <- ds[trnIndex, ]
+lcdfTst <- ds[-trnIndex, ]
+#To split the data, we considered several variables.
+#rgModel1 <- ranger(loan_status~., data=lcdfTrn%>% select(-c(actualTerm, actualReturn, total_pymnt)), #num.trees=200, importance='permutation', probability=TRUE)
+
+#build a tree model
+c5_DT1 <- c5_DT1 <- C5.0(loan_status ~., data=lcdfTrn %>%  select(-all_of(varsOmit)),  control=C5.0Control(minCases=30))
+
+#model details
+summary(c5_DT1)
+
+#You may find that the tree has only one root node --- why?
+#Is it maybe due to the class imbalance in the data
+lcdfTrn %>% group_by(loan_status) %>% tally()
+   #show about 6 times more 'Fully Paid' than 'Charged Off' loans
+
+#To consider a more balanced data for building the tree, C%.0 has a 'weights' parameter - this can specify a vector of weights for each example
+#Suppose we want to weight the 'Charged Off' examples as 6, and 'Fully Paid' examples as 1
+caseWeights <- ifelse(lcx$loan_status=="Charged Off", 6, 1)
+
+#Then use these caseWeights in the C5.0 function
+c5_DT1 <- C5.0(loan_status ~., data=lcdfTrn %>%  select(-all_of(varsOmit)), weights = caseWeights, control=C5.0Control(minCases=30))
+
+summary(c5_DT1)
+
+predTrn <- predict(c5_DT1, lcdfTrn, type='prob')
+head(predTrn)
+   #this show two columns,  with scores ('prob') for each class label
+
+CTHRESH=0.5
+table(pred = predTrn[,'Fully Paid' ] > CTHRESH, true=lcdfTrn$loan_status)
+
+predTst <- predict(c5_DT1, lcdfTst, type='prob')
+table(pred = predTst[,'Fully Paid' ] > CTHRESH, true=lcdfTst$loan_status)
+
+
+#Rules
+c5_rules1 <- C5.0(loan_status ~., data=lcdfTrn %>%  select(-all_of(varsOmit)), weights = caseWeights, rules=TRUE, control=C5.0Control(minCases=30))
+
+summary(c5_rules1)
+
+predTrn <- predict(c5_DT1, lcdfTrn, type='class')
+confusionMatrix(predTrn, lcdfTrn$loan_status)
+```
+
+```{r, }
+#Train decision tree models (use both rpart, c50) Remember - if the model performance looks “too” good, it may be due to leakage – make sure you check to ensure that none of the variables used in modeling have leakage problems. Look at variable importance in the models – any leakage causing variables will typically be among the most important. In building decision tree models, what parameters do you experiment with, and what performance do you obtain (on training and validation sets)? Clearly tabulate performance for different parameter settings, and briefly describe your findings. For evaluation of models, you should include confusion matrix related measures, as well as ROC analyses and lifts. Explain which performance measures you focus on, and why. 
+
+#Do you want to use all the variables in the dataset as predictors ?
+#Take a look at teh data
+glimpse(ds)
+
+# Are are some variable you want to exclude  - due to leakage, or other reasons?
+# What about variables like actualTerm, actualReturn, ... which you calculated?
+# These will be useful in performance assessment, but should not be used in building the model.
+#Are there any data variables which you may not want to use in developing the model?
+
+varsOmit <- c('actualTerm', 'actualReturn', 'total_pymnt')  #are there others?
+#Check of the target, loan_status, is a factor variable -- if not, convert to  a factor variable
+#lcdf$loan_status <- factor(lcdf$loan_status, levels=c("Fully Paid", "Charged Off"))
+lcDT1 <- rpart(loan_status ~., data=lcdfTrn %>% select(-all_of(varsOmit)), method="class", parms = list(split = "information"), control = rpart.control(minsplit = 30))
+printcp(lcDT1)  #reasonable ?  (If the tree does not grow at all, maybe set a lower value of cp?)
+
+#variable importance
+lcDT1$variable.importance
+  # Does this look reasonable?  Any leakage causing variables can show up as highly important!!
+  #  Make sure you remove any leakage variables (include in varsOmit above)
+
+lcDT1 <- rpart(loan_status ~., data=lcdfTrn %>% select(-all_of(varsOmit)), method="class", parms = list(split = "information"), control = rpart.control(cp=0.0001, minsplit = 50))
+
+#Do we want to prune the tree -- check for performance with different cp levels
+printcp(lcDT1)
+lcDT1p<- prune.rpart(lcDT1, cp=0.0003)   
+     #Note: this value of cp used here is just as an example. You should select the best cp value based on rpart cpTable 
+
+
+#Training the model considering a more balanced training dataset?
+#Use the 'prior' parameters -- to account for unbalanced training data
+#The 'prior' parameter can be used to specify the distribution of examples across classes.  By default, the prior is taken from the dataset
+#For rpart to consider a balanced distribution:
+lcDT1b <- rpart(loan_status ~., data=lcdfTrn %>% select(-all_of(varsOmit)), 
+method="class", parms = list(split = "gini", prior=c(0.5, 0.5)), 
+control = rpart.control(cp=0.0, minsplit = 20, minbucket = 10, maxdepth = 20,  xval=10) )
+
+#Evaluate performance
+predTrn=predict(lcDT1,lcdfTrn, type='class')
+table(pred = predTrn, true=lcdfTrn$loan_status)
+mean(predTrn == lcdfTrn$loan_status)
+table(pred = predict(lcDT1,lcdfTst, type='class'), true=lcdfTst$loan_status)
+mean(predict(lcDT1,lcdfTst, type='class') ==lcdfTst$loan_status)
+
+#With a different classification threshold
+CTHRESH=0.3
+predProbTrn=predict(lcDT1,lcdfTrn, type='prob')
+predTrnCT = ifelse(predProbTrn[, 'Charged Off'] > CTHRESH, 'Charged Off', 'Fully Paid')
+table(predTrnCT , true=lcdfTrn$loan_status)
+# Or, to set the predTrnCT values as factors, and then get the confusion matrix
+table(predictions=factor(predTrnCT, levels=c("Fully Paid", "Charged Off")), actuals=lcdfTrn$loan_status)
+
+#Or you can use the confusionMatrix function from the caret package
+confusionMatrix(predTrn, lcdfTrn$loan_status)
+#if you get an error saying that the 'e1071' package is required, you should install and load that too. Notice that the output says 'Positive' class: Fully Paid. So,the confusionMatrix based performance measures are based on the "Fully Paid" class as the class of interest. If you want to get performance measure for "Charged Off", use the positive- paremeter
+confusionMatrix(predTrn, lcdfTrn$loan_status, positive="Charged Off")
+
+#ROC plot
+score=predict(lcDT1,lcdfTst, type="prob")[,"Charged Off"]
+pred=prediction(score, lcdfTst$loan_status, label.ordering = c("Fully Paid", "Charged Off"))
+    #label.ordering here specifies the 'negative', 'positive' class labels   
+
+#ROC curve
+aucPerf <-performance(pred, "tpr", "fpr")
+plot(aucPerf)
+abline(a=0, b= 1)
+
+#AUC value
+aucPerf=performance(pred, "auc")
+aucPerf@y.values
+
+#Lift curve
+liftPerf <-performance(pred, "lift", "rpp")
+plot(liftPerf)
+```
+
+```{r, }
+#Identify the best tree model. Why do you consider it best? Describe this model – in terms of complexity (size). Examine variable importance. How does this relate to your uni-variate analyses in Question 5 above? Briefly describe how variable importance is obtained (the process used in your best decision tree – note that the approach is not the same for rpart and C50). 
+
+# Variable importance
+lcDT1$variable.importance
+```
+
+```{r, }
+#Develop a random forest model. (Note the ‘ranger’ library can give faster computations) What parameters do you experiment with, and does this affect performance? Describe the best model in terms of number of trees, performance, variable importance. Compare the performance of random forest and best decision tree model from the previous question. Do you find the importance of variables to be similar/different? Which model would you prefer, and why?
+thresh = 0.7
+set.seed(213)
+trn_split<- sample(1:nrow(ds), size = round(thresh * nrow(ds)), replace=FALSE)
+vars_to_omit <- c('total_pymnt','actualTerm', 'actualReturn')
+train_ds <- ds[trn_split, ]
+test_ds <- ds[-trn_split, ]
+
+
+rf_model <- ranger(loan_status ~ .,data=train_ds)
+
+
+#On Validation
+test_preds<-predict(rf_model,type='response')$predictions
+test_preds_conv <- ifelse(test_preds[,"Charged Off"] > 0.5,"Charged Off","Fully Paid")
+confusionMatrix(factor(test_preds_conv,levels=c("Charged Off","Fully Paid")),test_ds$loan_status,positive = "Charged Off")
+
+test_preds_ <- test_preds[,'Charged Off']
+pred=prediction(test_preds_, test_ds$loan_status, label.ordering = c("Fully Paid", "Charged Off"))  #label.ordering = (negative class, positive class)
+
+#ROC curve
+roc_curve_rf <-performance(pred, "tpr", "fpr")
+plot(roc_curve_rf)
+abline(a=0, b= 1)
+#AUC value
+auc_score<-performance(pred, "auc")
+auc_score@y.values
+#Lift curve
+liftPerf_rf <-performance(pred, "lift", "rpp")
+plot(liftPerf_rf)
+
+
+```
+
+```{r, }
+# Develop boosted tree models (using either gbm or xgBoost) to predict loan_status. Experiment with different parameters using a grid of parameter values. Use cross-validation. Explain the rationale for your experimentation. How does performance vary with parameters, and which parameter setting you use for the 'best' model.
+#Model performance should be evaluated through use of same set of criteria as for the earlier models - confusion matrix based, ROC analyses and AUC, cost-based performance.
+#Provide a table with comparative evaluation of all the best models from each methods; show their ROC curves in a combined plot. Also provide profit-curves and 'best' profit' and associated cutoff. At this cutoff, what are the accuracy values for the different models?
+
+#One-hot encoding
+dummy_vars_<-dummyVars(~.,data=ds%>% select(-loan_status))
+dummied_ds<-predict(dummy_vars_, ds)
+
+target_class2ind<-class2ind(ds$loan_status, drop2nd = FALSE)
+co_class<-target_class2ind[ , 1] # Selected 1st Column (Charged Off) as positive class - level 0: Fully Paid, level 1: Charged Off
+
+#Splitting into Train and Test  
+train_ds_dummied<-dummied_ds[trn_split,]
+train_lbl<-co_class[trn_split]
+test_ds_dummied<-dummied_ds[-trn_split,]
+test_lbl<-co_class[-trn_split]
+
+train_ds_matrix<-xgb.DMatrix( subset(train_ds_dummied, select=-c(funded_amnt,total_pymnt,actualTerm,actualReturn)), label=train_lbl)
+test_ds_matrix<-xgb.DMatrix( subset( test_ds_dummied,select=-c(funded_amnt,total_pymnt,actualTerm,actualReturn)), label=test_lbl)
+
+xgb_watchlist<-list(train = train_ds_matrix, eval= test_ds_matrix)
+
+#Initial xgboost model
+xgbParam<-list (
+max_depth= 5, eta = 0.1,
+objective = "binary:logistic",
+eval_metric="error", eval_metric= "auc")
+
+xgb_untuned <-xgb.train( xgbParam, train_ds_matrix, nrounds= 500, xgb_watchlist, early_stopping_rounds= 9,scale_pos_weight = 10 )
+xgb_untuned$best_iteration
+
+# set up the hyper-parameter search
+xgb_grid = expand.grid(eta = c(0.01, 0.001, 0.0001),
+                       max_depth = c(2, 5))
+
+for(i in 1:nrow(xgb_grid)) {
+  xgb_tune<-xgboost(data=train_ds_matrix,booster='gbtree',objective = "binary:logistic",nrounds=1000, eta=xgb_grid$eta[i],xgb_watchlist, max_depth=xgb_grid$max_depth[i], early_stopping_rounds = 10,scale_pos_weight = 9,col_sample_bytree=0.6,min_child_weight=1,eval_metric = "error",eval_metric='auc')
+  xgb_grid$bestTree[i] <-xgb_tune$evaluation_log[xgb_tune$best_iteration]$iter
+  xgb_grid$bestPerf[i] <-xgb_tune$evaluation_log[xgb_tune$best_iteration]$train_auc
+}
+  
+xgb_grid <- xgb_grid[order(xgb_grid$bestPerf),]
+xgb_grid
+
+#Best Parameters are: eta: 0.01, max_depth=5, col_sample_bytree = 0.6, min_child_weight =1
+
+xgbParam<-list (
+max_depth= 5, eta = 0.01,
+booster='gbtree',
+objective = "binary:logistic",
+col_sample_bytree=0.6,
+scale_pos_weight=12,
+min_child_weight=1,
+eval_metric="error", eval_metric= "auc")
+
+#Use best parameters and perform cross-validation
+set.seed(213)
+xgb_cv<-xgb.cv( xgbParam, train_ds_matrix, nrounds= 1000,xgb_watchlist, nfold=5, early_stopping_rounds= 10)
+
+#best iteration
+xgb_cv$best_iteration
+best_cvIter<-which.max(xgb_cv$evaluation_log$test_auc_mean)
+
+xgb_best<-xgb.train( xgbParam, train_ds_matrix,nrounds= best_cvIter)
+#variable importance
+xgb.importance(model = xgb_best) %>% view()
+
+
+#Predicting on Train dataset
+xgb_train_preds <- predict(xgb_best,train_ds_matrix)
+table(preds=if_else(xgb_train_preds>0.5,1,0), actual=train_lbl)
+confusionMatrix(as.factor(if_else(xgb_train_preds>0.5,1,0)), as.factor(train_lbl),positive = '1')  # 1: Charged Off
+
+#Evaluation - CM, ROC, AUC
+pred=prediction(xgb_train_preds, train_ds$loan_status, label.ordering = c("Fully Paid", "Charged Off"))  #label.ordering = (negative class, positive class)
+
+#ROC curve
+roc_curve <-performance(pred, "tpr", "fpr")
+plot(roc_curve)
+#abline(a=0, b= 1)
+#AUC value
+auc_score<-performance(pred, "auc")
+auc_score@y.values
+#Lift curve
+liftPerf <-performance(pred, "lift", "rpp")
+plot(liftPerf)
+
+#Predicting on validation dataset
+
+xgb_test_preds <- predict(xgb_best,test_ds_matrix)
+table(preds=if_else(xgb_test_preds>0.5,1,0), actual=test_lbl)
+confusionMatrix(as.factor(if_else(xgb_test_preds>0.5,1,0)), as.factor(test_lbl),positive = '1')  # 1: Charged Off
+
+#Evaluation - CM, ROC, AUC, Cost-Based Perf
+pred=prediction(xgb_test_preds, test_ds$loan_status, label.ordering = c("Fully Paid", "Charged Off"))  #label.ordering = (negative class, positive class)
+
+#ROC curve
+roc_curve_xgb <-performance(pred, "tpr", "fpr")
+plot(roc_curve_xgb)
+#abline(a=0, b= 1)
+#AUC value
+auc_score<-performance(pred, "auc")
+auc_score@y.values
+#Lift curve
+liftPerf_xgb <-performance(pred, "lift", "rpp")
+plot(liftPerf_xgb)
+
+profit_val <- 24
+loss_val <- -35
+
+test_preds_prob_dt <- data.frame(preds = xgb_test_preds)
+test_preds_prob_dt <- cbind(test_preds_prob_dt, status=test_lbl)
+test_preds_prob_dt <- test_preds_prob_dt[order(-test_preds_prob_dt$preds),] 
+test_preds_prob_dt$profit <- if_else(test_preds_prob_dt$status == 0, profit_val, loss_val)
+test_preds_prob_dt$cumm_profit <- cumsum(test_preds_prob_dt$profit)
+rownames(test_preds_prob_dt) <- 1:nrow(test_preds_prob_dt)
+
+profit_cut_off = 0.5
+test_preds_prob_dt_cutoff <- test_preds_prob_dt[which(test_preds_prob_dt$preds>profit_cut_off),]
+dim(test_preds_prob_dt_cutoff)
+cumm_profit_max <- max(test_preds_prob_dt_cutoff$cumm_profit)
+rownames(test_preds_prob_dt_cutoff) <- 1:nrow(test_preds_prob_dt_cutoff)
+row_num <- rownames(test_preds_prob_dt_cutoff[which.max(test_preds_prob_dt_cutoff$cumm_profit),])
+
+plot(x=rownames(test_preds_prob_dt),y=test_preds_prob_dt$cumm_profit,type='l', xlab= 'Index', ylab= 'Cumulative Profit',main=sprintf('xgboost: At %s Cut Off, cumm_profit = %s ',profit_cut_off,cumm_profit_max))
+#abline(h=cumm_profit_max,lty=2)
+
+
+```
+
+```{r}
+plot(aucPerf_dt4, col = 'red')
+plot(roc_curve_c50, add = TRUE, col = 'green')
+plot(roc_curve_rf, add = TRUE, col = 'blue')
+plot(roc_curve_xgb, add = TRUE, col = 'violet')
+abline(a=0,b=1)
+legend(x =0.4,y=0.4,legend=c('Decision Tree (rpart)', 'Decision Tree (C50)','Random Forest','Xgboost'), col=c('red','green','blue','violet'),lty=1)
+
+
+plot(liftPerf_dt4, col = 'red',xlim=c(0,1),ylim=c(0,8))
+plot(liftPerf_c50, add = TRUE, col = 'green')
+plot(liftPerf_rf, add = TRUE, col = 'blue')
+plot(liftPerf_xgb, add = TRUE, col = 'violet')
+
+```
+
+
+```{r, }
+ #Develop linear (glm) models to predict loan_status. Experiment with different parameter values, and identify which gives ‘best’ performance. Use cross-validation. Describe how you determine ‘best’ performance.How do you handle variable selection?
+#Experiment with Ridge and Lasso, and show how you vary these parameters, and what performance is observed.
+
+levels(train_ds$loan_status)
+y_train_glm<-factor(if_else(train_ds$loan_status=="Fully Paid", '1', '0'))
+x_train_glm<-train_ds %>% select(-loan_status,-funded_amnt,-total_pymnt,-actualTerm,-actualReturn)
+
+glm_model_las <- cv.glmnet(data.matrix(x_train_glm), y_train_glm, family="binomial",alpha=1)
+glm_model_rid <- cv.glmnet(data.matrix(x_train_glm), y_train_glm, family="binomial",alpha=0)
+
+
+glm_model_las$lambda.1se
+as.matrix(coef(glm_model_las, s = glm_model_las$lambda.min))
+plot(glm_model_las)
+
+glm_model_rid$lambda.1se
+coef(glm_model_rid, s = glm_model_rid$lambda.min)
+plot(glm_model_rid)
+
+#On Validation - Lasso
+glm_preds_las <- predict(glm_model_las,data.matrix(test_ds %>%  select(-loan_status,-funded_amnt,-total_pymnt,-actualTerm,-actualReturn)),s='lambda.min',type='response')
+
+glm_preds_class <- if_else(glm_preds_las>0.5,"Fully Paid","Charged Off")
+confusionMatrix(as.factor(glm_preds_class), as.factor(test_ds$loan_status))
+
+#Evaluation - CM, ROC, AUC, Cost-Based Perf
+pred=prediction(glm_preds_las, test_ds$loan_status, label.ordering = c("Charged Off", "Fully Paid"))  #label.ordering = (negative class, positive class)
+
+#ROC curve
+roc_curve <-performance(pred, "tpr", "fpr")
+plot(roc_curve)
+#abline(a=0, b= 1)
+#AUC value
+auc_score<-performance(pred, "auc")
+auc_score@y.values
+#Lift curve
+liftPerf <-performance(pred, "lift", "rpp")
+plot(liftPerf)
+
+#On Validation - Ridge
+glm_preds_rid <- predict(glm_model_rid,data.matrix(test_ds %>%  select(-loan_status,-funded_amnt,-total_pymnt,-actualTerm,-actualReturn)),s='lambda.min',type='response')
+
+glm_preds_class <- if_else(glm_preds_rid>0.5,"Fully Paid","Charged Off")
+confusionMatrix(as.factor(glm_preds_class), as.factor(test_ds$loan_status))
+
+#Evaluation - CM, ROC, AUC, Cost-Based Perf
+pred=prediction(glm_preds_rid, test_ds$loan_status, label.ordering = c("Charged Off", "Fully Paid"))  #label.ordering = (negative class, positive class)
+
+#ROC curve
+roc_curve_glm <-performance(pred, "tpr", "fpr")
+plot(roc_curve_glm)
+#abline(a=0, b= 1)
+#AUC value
+auc_score<-performance(pred, "auc")
+auc_score@y.values
+#Lift curve
+liftPerf_glm <-performance(pred, "lift", "rpp")
+plot(liftPerf_glm)
+
+
+profit_val <- 24
+loss_val <- -35
+
+test_preds_prob_dt <- data.frame(glm_preds_las)
+test_preds_prob_dt <- cbind(test_preds_prob_dt, status=test_ds$loan_status)
+test_preds_prob_dt <- test_preds_prob_dt[order(-test_preds_prob_dt$lambda.min),] 
+test_preds_prob_dt$profit <- if_else(test_preds_prob_dt$status == "Fully Paid", profit_val, loss_val)
+test_preds_prob_dt$cumm_profit <- cumsum(test_preds_prob_dt$profit)
+rownames(test_preds_prob_dt) <- 1:nrow(test_preds_prob_dt)
+
+profit_cut_off = 0.5
+test_preds_prob_dt_cutoff <- test_preds_prob_dt[which(test_preds_prob_dt$lambda.min>profit_cut_off),]
+dim(test_preds_prob_dt_cutoff)
+cumm_profit_max <- max(test_preds_prob_dt_cutoff$cumm_profit)
+rownames(test_preds_prob_dt_cutoff) <- 1:nrow(test_preds_prob_dt_cutoff)
+row_num <- rownames(test_preds_prob_dt_cutoff[which.max(test_preds_prob_dt_cutoff$cumm_profit),])
+
+plot(x=rownames(test_preds_prob_dt),y=test_preds_prob_dt$cumm_profit,type='l', xlab= 'Index', ylab= 'Cumulative Profit',main=sprintf('glm: At %s Cut Off, cumm_profit = %s ',profit_cut_off,cumm_profit_max))
+abline(h=cumm_profit_max,lty=2)
+
+
+
+#Our training data has imbalanced classes and because of that our cross validation error is increasing with every split. We need to balance the classes to make sure we get proper model. We will use ROSE package to over sample the charged off class data.
+
+balanced_train_ds <- ovun.sample(loan_status ~ ., data = train_ds, method = "over",N = 121000,seed=213)$data
+round(100*prop.table(table(balanced_train_ds$loan_status)),digits=2)
+
+
+levels(balanced_train_ds$loan_status)
+y_train_balanced<-factor(if_else(balanced_train_ds$loan_status=="Fully Paid", '1', '0'))
+x_train_balanced<-balanced_train_ds %>% select(-loan_status,-funded_amnt,-total_pymnt,-actualTerm,-actualReturn)
+
+glm_model_balanced_las <- cv.glmnet(data.matrix(x_train_balanced), y_train_balanced, family="binomial",alpha=1)
+
+glm_model_balanced_las$lambda.1se
+as.matrix(coef(glm_model_balanced_las, s = glm_model_balanced_las$lambda.min))
+plot(glm_model_balanced_las)
+
+glm_model_balanced_rid <- cv.glmnet(data.matrix(x_train_balanced), y_train_balanced, family="binomial",alpha=0)
+
+glm_model_balanced_rid$lambda.1se
+coef(glm_model_balanced_rid, s = glm_model_balanced_rid$lambda.min)
+plot(glm_model_balanced_rid)
+
+
+#On Validation - Lasso
+glm_preds_balanced_las <- predict(glm_model_balanced_las,data.matrix(test_ds %>%  select(-loan_status,-funded_amnt,-total_pymnt,-actualTerm,-actualReturn)),s='lambda.min',type='response')
+
+glm_preds_balanced_class <- if_else(glm_preds_balanced_las>0.5,"Fully Paid","Charged Off")
+confusionMatrix(as.factor(glm_preds_balanced_class), as.factor(test_ds$loan_status))
+
+#Evaluation - CM, ROC, AUC, Cost-Based Perf
+pred=prediction(glm_preds_balanced_las, test_ds$loan_status, label.ordering = c("Charged Off", "Fully Paid"))  #label.ordering = (negative class, positive class)
+
+#ROC curve
+roc_curve <-performance(pred, "tpr", "fpr")
+plot(roc_curve)
+#abline(a=0, b= 1)
+#AUC value
+auc_score<-performance(pred, "auc")
+auc_score@y.values
+#Lift curve
+liftPerf <-performance(pred, "lift", "rpp")
+plot(liftPerf)
+
+#On Validation - Ridge
+glm_preds_balanced_rid <- predict(glm_model_balanced_rid,data.matrix(test_ds %>%  select(-loan_status,-funded_amnt,-total_pymnt,-actualTerm,-actualReturn)),s='lambda.min',type='response')
+
+glm_preds_balanced_class <- if_else(glm_preds_balanced_rid>0.5,"Fully Paid","Charged Off")
+confusionMatrix(as.factor(glm_preds_balanced_class), as.factor(test_ds$loan_status))
+
+#Evaluation - CM, ROC, AUC, Cost-Based Perf
+pred=prediction(glm_preds_balanced_rid, test_ds$loan_status, label.ordering = c("Charged Off", "Fully Paid"))  #label.ordering = (negative class, positive class)
+
+#ROC curve
+roc_curve <-performance(pred, "tpr", "fpr")
+plot(roc_curve)
+#abline(a=0, b= 1)
+#AUC value
+auc_score<-performance(pred, "auc")
+auc_score@y.values
+#Lift curve
+liftPerf <-performance(pred, "lift", "rpp")
+plot(liftPerf)
+
+
+profit_val <- 24
+loss_val <- -35
+
+test_preds_prob_dt <- data.frame(glm_preds_balanced_las)
+test_preds_prob_dt <- cbind(test_preds_prob_dt, status=test_ds$loan_status)
+test_preds_prob_dt <- test_preds_prob_dt[order(-test_preds_prob_dt$lambda.min),] 
+test_preds_prob_dt$profit <- if_else(test_preds_prob_dt$status == "Fully Paid", profit_val, loss_val)
+test_preds_prob_dt$cumm_profit <- cumsum(test_preds_prob_dt$profit)
+rownames(test_preds_prob_dt) <- 1:nrow(test_preds_prob_dt)
+
+profit_cut_off = 0.5
+test_preds_prob_dt_cutoff <- test_preds_prob_dt[which(test_preds_prob_dt$lambda.min>profit_cut_off),]
+dim(test_preds_prob_dt_cutoff)
+cumm_profit_max <- max(test_preds_prob_dt_cutoff$cumm_profit)
+rownames(test_preds_prob_dt_cutoff) <- 1:nrow(test_preds_prob_dt_cutoff)
+row_num <- rownames(test_preds_prob_dt_cutoff[which.max(test_preds_prob_dt_cutoff$cumm_profit),])
+
+plot(x=rownames(test_preds_prob_dt),y=test_preds_prob_dt$cumm_profit,type='l', xlab= 'Index', ylab= 'Cumulative Profit',main=sprintf('glm balanced: At %s Cut Off, cumm_profit = %s ',profit_cut_off,cumm_profit_max))
+#abline(h=cumm_profit_max,lty=2)
+
+
+```
+
+```{r, }
+#Develop models to identify loans which provide the best returns. Explain how you define returns? Does it include Lending Club’s service costs? Develop glm, rf, gbm/xgb models for this. Show how you systematically experiment with different parameters to find the best models. Compare model performance – explain what performance criteria do you use, and why.
+
+rf_model_ret<-ranger(actualReturn~., data=subset(train_ds, select=-c(funded_amnt,total_pymnt,actualTerm, loan_status)), importance = 'permutation',num.trees = 1000, mtry = 7)
+
+#On Train
+rf_model_ret_preds_train <- predict(rf_model_ret, train_ds)
+sqrt(mean((rf_model_ret_preds_train$predictions-train_ds$actualReturn)^2))
+
+plot(rf_model_ret_preds_train$predictions,train_ds$actualReturn)
+
+#On Validation
+rf_model_ret_preds_test <- predict(rf_model_ret,test_ds)
+sqrt(mean((rf_model_ret_preds_test$predictions-test_ds$actualReturn)^2))
+plot (rf_model_ret_preds_test$predictions, test_ds$actualReturn)
+
+train_ds$grade <- ds$grade[trn_split]
+test_ds$grade <- ds$grade[-trn_split]
+
+#Performance by deciles training
+table_pred_ret_train<-train_ds%>% select(grade,loan_status, actualReturn, actualTerm, int_rate) %>% mutate(preds=rf_model_ret_preds_train$predictions)
+
+table_pred_ret_train<-table_pred_ret_train%>% mutate(tile=ntile(-preds, 10))
+table_pred_ret_train%>% group_by(tile) %>% summarise(count=n(), avgpredRet=mean(preds), numDefaults=sum(loan_status=="Charged Off"), avgActRet=mean(actualReturn), minRet=min(actualReturn), maxRet=max(actualReturn), avgTer=mean(actualTerm), totA=sum(grade=="A"), totB=sum(grade=="B" ), totC=sum(grade=="C"), totD=sum(grade=="D"), totE=sum(grade=="E"), totF=sum(grade=="F"),totG=sum(grade=="G"))
+
+#Performance by deciles validation
+table_pred_ret_test<-test_ds%>% select(grade,loan_status, actualReturn, actualTerm, int_rate) %>% mutate(preds=rf_model_ret_preds_test$predictions)
+
+table_pred_ret_test<-table_pred_ret_test%>% mutate(tile=ntile(-preds, 10))
+rf_ret_summ_tbl <- table_pred_ret_test%>% group_by(tile) %>% summarise(count=n(), avgpredRet=mean(preds), numDefaults=sum(loan_status=="Charged Off"), avgActRet=mean(actualReturn), minRet=min(actualReturn), maxRet=max(actualReturn), avgTer=mean(actualTerm), totA=sum(grade=="A"), totB=sum(grade=="B" ), totC=sum(grade=="C"), totD=sum(grade=="D"), totE=sum(grade=="E"), totF=sum(grade=="F"),totG=sum(grade=="G"))
+
+
+
+#glm_model
+glm_train_data<-train_ds%>% select(-loan_status, -actualTerm, -grade, -actualReturn,-funded_amnt,-total_pymnt)
+glm_model_ret<-cv.glmnet(data.matrix(glm_train_data), train_ds$actualReturn, family="gaussian")
+
+#on Train
+glm_model_ret_preds_train <- predict(glm_model_ret, data.matrix(glm_train_data),s="lambda.min")
+sqrt(mean((glm_model_ret_preds_train-train_ds$actualReturn)^2))
+plot(glm_model_ret_preds_train,train_ds$actualReturn)
+plot(glm_model_ret)
+
+table_pred_ret_train<-train_ds%>% select(grade, loan_status, actualReturn, actualTerm, int_rate) %>% mutate(preds=glm_model_ret_preds_train)
+
+table_pred_ret_train<-table_pred_ret_train%>% mutate(tile=ntile(-preds, 10))
+table_pred_ret_train%>% group_by(tile) %>% summarise(count=n(), avgpredRet=mean(preds), numDefaults=sum(loan_status=="Charged Off"), avgActRet=mean(actualReturn), minRet=min(actualReturn), maxRet=max(actualReturn), avgTer=mean(actualTerm), totA=sum(grade=="A"), totB=sum(grade=="B" ), totC=sum(grade=="C"), totD=sum(grade=="D"), totE=sum(grade=="E"), totF=sum(grade=="F"),totG=sum(grade=="G"))
+
+#on Validation
+glm_model_ret_preds_test <- predict(glm_model_ret, data.matrix(test_ds%>% select(-loan_status, -actualTerm, -grade, -actualReturn,-funded_amnt,-total_pymnt)),s="lambda.min")
+sqrt(mean((glm_model_ret_preds_test-test_ds$actualReturn)^2))
+plot(glm_model_ret_preds_test,test_ds$actualReturn)
+
+table_pred_ret_test<-test_ds%>% select(grade, loan_status, actualReturn, actualTerm, int_rate) %>% mutate(preds=glm_model_ret_preds_test)
+
+table_pred_ret_test<-table_pred_ret_test%>% mutate(tile=ntile(-preds, 10))
+glm_ret_summ_tbl <- table_pred_ret_test%>% group_by(tile) %>% summarise(count=n(), avgpredRet=mean(preds), numDefaults=sum(loan_status=="Charged Off"), avgActRet=mean(actualReturn), minRet=min(actualReturn), maxRet=max(actualReturn), avgTer=mean(actualTerm), totA=sum(grade=="A"), totB=sum(grade=="B" ), totC=sum(grade=="C"), totD=sum(grade=="D"), totE=sum(grade=="E"), totF=sum(grade=="F"),totG=sum(grade=="G"))
+
+#xgb model
+#One-hot encoding
+dummy_vars_<-dummyVars(~.,data=ds%>% select(-loan_status))
+dummied_ds<-predict(dummy_vars_, ds)
+
+#Splitting into Train and Test  
+train_ds_dummied<-dummied_ds[trn_split,]
+train_lbl<-ds$actualReturn[trn_split]
+test_ds_dummied<-dummied_ds[-trn_split,]
+test_lbl<-ds$actualReturn[-trn_split]
+
+train_ds_matrix<-xgb.DMatrix( subset(train_ds_dummied, select=-c(funded_amnt,total_pymnt,actualTerm,actualReturn)), label=train_lbl)
+test_ds_matrix<-xgb.DMatrix( subset( test_ds_dummied,select=-c(funded_amnt,total_pymnt,actualTerm,actualReturn)), label=test_lbl)
+
+xgb_watchlist<-list(train = train_ds_matrix, eval= test_ds_matrix)
+
+xgb_grid = expand.grid(eta = c(0.01, 0.001, 0.0001),
+                       max_depth = c(2, 5))
+
+for(i in 1:nrow(xgb_grid)) {
+  xgb_tune<-xgboost(data=train_ds_matrix,booster='gbtree',objective = "reg:linear",nrounds=1000, eta=xgb_grid$eta[i],xgb_watchlist, max_depth=xgb_grid$max_depth[i], early_stopping_rounds = 10,scale_pos_weight = 9,col_sample_bytree=0.6,min_child_weight=1,eval_metric='rmse')
+  xgb_grid$bestTree[i] <-xgb_tune$evaluation_log[xgb_tune$best_iteration]$iter
+  xgb_grid$bestPerf[i] <-xgb_tune$evaluation_log[xgb_tune$best_iteration]$train_rmse
+}
+  
+xgb_grid <- xgb_grid[order(xgb_grid$bestPerf),]
+xgb_grid
+
+xgbParam<-list (
+max_depth= 2, eta = 0.01,
+booster='gbtree',
+objective = "reg:linear",
+col_sample_bytree=0.6,
+scale_pos_weight = 9,
+min_child_weight=1,
+eval_metric= "rmse")
+
+#Use best parameters and perform cross-validation
+set.seed(213)
+xgb_cv<-xgb.cv( xgbParam, train_ds_matrix, nrounds= 1000,xgb_watchlist, nfold=5, early_stopping_rounds= 10 )
+
+#best iteration
+xgb_cv$best_iteration
+
+xgb_ret_best<-xgb.train( xgbParam, train_ds_matrix,nrounds= xgb_cv$best_iteration)
+#variable importance
+xgb.importance(model = xgb_ret_best) %>% view()
+
+#on train
+xgb_ret_preds_train <- predict(xgb_ret_best,train_ds_matrix)
+sqrt(mean((xgb_ret_preds_train-train_ds$actualReturn)^2))
+plot(xgb_ret_preds_train,train_ds$actualReturn)
+
+table_pred_ret_train<-train_ds%>% select(grade,loan_status, actualReturn, actualTerm, int_rate) %>% mutate(preds=xgb_ret_preds_train)
+
+table_pred_ret_train<-table_pred_ret_train%>% mutate(tile=ntile(-preds, 10))
+table_pred_ret_train%>% group_by(tile) %>% summarise(count=n(), avgpredRet=mean(preds), numDefaults=sum(loan_status=="Charged Off"), avgActRet=mean(actualReturn), minRet=min(actualReturn), maxRet=max(actualReturn), avgTer=mean(actualTerm), totA=sum(grade=="A"), totB=sum(grade=="B" ), totC=sum(grade=="C"), totD=sum(grade=="D"), totE=sum(grade=="E"), totF=sum(grade=="F"),totG=sum(grade=="G"))
+
+
+#on validation
+xgb_ret_preds_test <- predict(xgb_ret_best,test_ds_matrix)
+sqrt(mean((xgb_ret_preds_test-test_ds$actualReturn)^2))
+plot(xgb_ret_preds_test,test_ds$actualReturn)
+
+xgb_ret_preds_test<-test_ds%>% select(grade,loan_status, actualReturn, actualTerm, int_rate) %>% mutate(preds=xgb_ret_preds_test)
+
+xgb_ret_preds_test<-xgb_ret_preds_test%>% mutate(tile=ntile(-preds, 10))
+xgb_ret_summ_tbl <- xgb_ret_preds_test%>% group_by(tile) %>% summarise(count=n(), avgpredRet=mean(preds), numDefaults=sum(loan_status=="Charged Off"), avgActRet=mean(actualReturn), minRet=min(actualReturn), maxRet=max(actualReturn), avgTer=mean(actualTerm), totA=sum(grade=="A"), totB=sum(grade=="B" ), totC=sum(grade=="C"), totD=sum(grade=="D"), totE=sum(grade=="E"), totF=sum(grade=="F"),totG=sum(grade=="G"))
+
+
+
+plot(x=rf_ret_summ_tbl$tile, y=rf_ret_summ_tbl$avgpredRet,type='l',col='blue',main="Random Forest")
+lines(x=rf_ret_summ_tbl$tile, y=rf_ret_summ_tbl$avgActRet,type='l',col='green')
+legend(x = 5,legend=c('Predicted Returns', 'Actual Returns'),col=c('blue', 'green'), lty=1)
+
+plot(x=glm_ret_summ_tbl$tile, y=glm_ret_summ_tbl$avgpredRet,type='l',col='blue',main="glm")
+lines(x=glm_ret_summ_tbl$tile, y=glm_ret_summ_tbl$avgActRet,type='l',col='green')
+legend(x = 5,legend=c('Predicted Returns', 'Actual Returns'),col=c('blue', 'green'), lty=1)
+
+plot(x=xgb_ret_summ_tbl$tile, y=xgb_ret_summ_tbl$avgpredRet,type='l',col='blue',main="xgboost")
+lines(x=xgb_ret_summ_tbl$tile, y=xgb_ret_summ_tbl$avgActRet,type='l',col='green')
+legend(x = 5,legend=c('Predicted Returns', 'Actual Returns'),col=c('blue', 'green'), lty=1)
+
+```
+
+
+```{r, }
+#considering the best model for predicting loan-status and that for predicting loan returns -- how would you select loans for investment? There can be multiple approaches for combining information from the two models - describe your approach, and show performance. How does performance here compare with use of single models?
+
+#Loan_status classifier model - decile table
+M1_xgb_preds<-predict(xgb_best,test_ds_matrix)
+M1_xgb_scores <-test_ds%>% select(grade, loan_status, actualReturn, actualTerm, int_rate) %>% mutate(score=M1_xgb_preds)
+M1_xgb_scores<-M1_xgb_scores%>% mutate(tile=ntile(-score, 10))
+M1_xgb_scores%>% group_by(tile) %>% summarise(count=n(), avgSc=mean(score), numDefaults=sum(loan_status=="Charged Off"), avgActRet=mean(actualReturn), minRet=min(actualReturn), maxRet=max(actualReturn), avgTer=mean(actualTerm), totA=sum(grade=="A"), totB=sum(grade=="B" ), totC=sum(grade=="C"), totD=sum(grade=="D"), totE=sum(grade=="E"), totF=sum(grade=="F"),totG=sum(grade=="G"))
+
+#Actual Returns regression model - decile table
+M2_xgb_preds <- predict(xgb_ret_best,test_ds_matrix)
+M2_xgb_scores<-test_ds%>% select(grade, loan_status, actualReturn, actualTerm, int_rate) %>%
+mutate(pred_ret=M2_xgb_preds)
+M2_xgb_scores<-M2_xgb_scores%>% mutate(tile=ntile(-pred_ret, 10))
+M2_xgb_scores%>% group_by(tile) %>% summarise(count=n(), avgPredRet=mean(pred_ret), numDefaults=sum(loan_status=="Charged Off"), avgActRet=mean(actualReturn), minRet=min(actualReturn), maxRet=max(actualReturn), avgTer=mean(actualTerm), totA=sum(grade=="A"), totB=sum(grade=="B" ), totC=sum(grade=="C"), totD=sum(grade=="D"), totE=sum(grade=="E"), totF=sum(grade=="F"),totG=sum(grade=="G"))
+
+#Approach 1
+d=4
+comb_score<-M2_xgb_scores%>% mutate(prob_score=M1_xgb_scores$score)
+comb_tbl<-comb_score%>% filter(tile<=d)
+comb_tbl<-comb_tbl%>% mutate(tile2=ntile(-prob_score, 20))
+appro1_tbl <- comb_tbl%>% group_by(tile2) %>% summarise(count=n(), avgPredRet=mean(pred_ret), numDefaults=sum(loan_status=="Charged Off"), avgActRet=mean(actualReturn), minRet=min(actualReturn), maxRet=max(actualReturn), avgTer=mean(actualTerm), totA=sum(grade=="A"), totB=sum(grade=="B" ),totC=sum(grade=="C"), totD=sum(grade=="D"), totE=sum(grade=="E"), totF=sum(grade=="F"),totG=sum(grade=="G"))
+
+#Approach 2
+#considering top d decile from M2
+appro2_tbl<-comb_tbl%>% mutate(expRet=pred_ret*prob_score)
+appro2_tbl<-appro2_tbl%>% mutate(tile2=ntile(-expRet, 20))
+appro2_tbl <- appro2_tbl%>% group_by(tile2) %>% summarise(count=n(), avgPredRet=mean(pred_ret), numDefaults=sum(loan_status=="Charged Off"), avgActRet=mean(actualReturn), minRet=min(actualReturn), maxRet=max(actualReturn), avgTer=mean(actualTerm), totA=sum(grade=="A"), totB=sum(grade=="B" ), totC=sum(grade=="C"), totD=sum(grade=="D"), totE=sum(grade=="E"), totF=sum(grade=="F"),totG=sum(grade=="G"))
+
+appro1_tbl
+appro2_tbl
+
+plot(x=appro1_tbl$tile2, y=appro1_tbl$avgPredRet,type='l',col='blue',xlim=c(0,20),ylim=c(0,10))
+lines(x=appro1_tbl$tile2, y=appro1_tbl$avgActRet,type='l',col='green')
+legend(x = 5,legend=c('Predicted Returns', 'Actual Returns'),col=c('blue', 'green'),lty=1)
+
+plot(x=appro2_tbl$tile2, y=appro2_tbl$avgPredRet,type='l',col='blue',xlim=c(0,20),ylim=c(0,10))
+lines(x=appro2_tbl$tile2, y=appro2_tbl$avgActRet,type='l',col='green')
+legend(x = 5,legend=c('Predicted Returns', 'Actual Returns'),col=c('blue', 'green'),lty=1)
+
+```
+
+
+```{r, }
+# As seen in data summaries and your work in the first assignment, higher grade loans are less likely to default, but also carry lower interest rates; many lower grad loans are fully paid, and these can yield higher returns. One approach may be to focus on lower grade loans (C and below), and try to identify those which are likely to be paid off. Develop models from the data on lower grade loans, and check if this can provide an effective investment approach – for this, you can use one of the methods (glm, rf, or gbm/xgb) which you find to give superior performance from earlier questions.
+
+lg_train_ds <- train_ds%>% filter(grade=='C'| grade=='D'| grade== 'E'| grade== 'F'| grade== 'G')
+lg_test_ds<-test_ds%>% filter(grade=='C'| grade=='D'| grade== 'E'| grade== 'F'| grade== 'G')
+
+trn_dummy_vars_<-dummyVars(~.,data=lg_train_ds%>% select(-loan_status))
+train_ds_dummied<-predict(trn_dummy_vars_, lg_train_ds)
+
+tst_dummy_vars_<-dummyVars(~.,data=lg_test_ds%>% select(-loan_status))
+test_ds_dummied<-predict(tst_dummy_vars_, lg_test_ds)
+
+target_class2ind<-class2ind(lg_train_ds$loan_status, drop2nd = FALSE)
+train_lbl<-target_class2ind[ , 2] # Selected Fully Paid
+
+target_class2ind<-class2ind(lg_test_ds$loan_status, drop2nd = FALSE)
+test_lbl<-target_class2ind[ , 2] # Selected Fully Paid
+
+train_ds_matrix<-xgb.DMatrix( subset(train_ds_dummied, select=-c(funded_amnt,total_pymnt,actualTerm,actualReturn)), label=train_lbl)
+test_ds_matrix<-xgb.DMatrix( subset( test_ds_dummied,select=-c(funded_amnt,total_pymnt,actualTerm,actualReturn)), label=test_lbl)
+
+xgb_watchlist<-list(train = train_ds_matrix, eval= test_ds_matrix)
+
+xgbParam<-list (
+max_depth= 5, eta = 0.01,
+booster='gbtree',
+objective = "binary:logistic",
+col_sample_bytree=0.6,
+scale_pos_weight=9,
+min_child_weight=1,
+eval_metric="error", eval_metric= "auc")
+
+#Use best parameters and perform cross-validation
+set.seed(213)
+xgb_lg_cv<-xgb.cv( xgbParam, train_ds_matrix, nrounds= 1000,xgb_watchlist, nfold=5, early_stopping_rounds= 10)
+
+#best iteration
+xgb_lg_cv$best_iteration
+best_cvIter<-which.max(xgb_lg_cv$evaluation_log$test_auc_mean)
+
+xgb_lg_best<-xgb.train( xgbParam, train_ds_matrix,nrounds= best_cvIter)
+
+
+
+#returns model
+train_lbl<-lg_train_ds$actualReturn
+test_lbl<-lg_test_ds$actualReturn
+
+train_ds_matrix<-xgb.DMatrix( subset(train_ds_dummied, select=-c(funded_amnt,total_pymnt,actualTerm,actualReturn)), label=train_lbl)
+test_ds_matrix<-xgb.DMatrix( subset( test_ds_dummied,select=-c(funded_amnt,total_pymnt,actualTerm,actualReturn)), label=test_lbl)
+
+xgb_watchlist<-list(train = train_ds_matrix, eval= test_ds_matrix)
+
+xgb_grid = expand.grid(eta = c(0.01, 0.001, 0.0001),
+                       max_depth = c(2, 5, 8))
+
+for(i in 1:nrow(xgb_grid)) {
+  xgb_tune<-xgboost(data=train_ds_matrix,booster='gbtree',objective = "reg:linear",nrounds=1000, eta=xgb_grid$eta[i],xgb_watchlist, max_depth=xgb_grid$max_depth[i], early_stopping_rounds = 10,scale_pos_weight = 9,col_sample_bytree=0.6,min_child_weight=1,eval_metric='rmse')
+  xgb_grid$bestTree[i] <-xgb_tune$evaluation_log[xgb_tune$best_iteration]$iter
+  xgb_grid$bestPerf[i] <-xgb_tune$evaluation_log[xgb_tune$best_iteration]$train_rmse
+}
+  
+xgb_grid <- xgb_grid[order(xgb_grid$bestPerf),]
+xgb_grid
+
+xgbParam<-list (
+max_depth= 8, eta = 0.01,
+booster='gbtree',
+objective = "reg:linear",
+col_sample_bytree=0.6,
+scale_pos_weight = 9,
+min_child_weight=1,
+eval_metric= "rmse")
+
+#Use best parameters and perform cross-validation
+set.seed(213)
+xgb_lg_cv<-xgb.cv( xgbParam, train_ds_matrix, nrounds= 1000,xgb_watchlist, nfold=5, early_stopping_rounds= 10 )
+
+#best iteration
+xgb_lg_cv$best_iteration
+
+xgb_lg_ret_best<-xgb.train( xgbParam, train_ds_matrix,nrounds= xgb_cv$best_iteration)
+#variable importance
+xgb.importance(model = xgb_lg_ret_best) %>% view()
+
+#on validation
+xgb_lg_ret_preds_test <- predict(xgb_lg_ret_best,test_ds_matrix)
+sqrt(mean((xgb_lg_ret_preds_test-lg_test_ds$actualReturn)^2))
+
+
+#Combining Models by Approach 2
+lg_score_tbl<-lg_test_ds%>% select(grade, loan_status, actualReturn, actualTerm, int_rate) %>% mutate(score=(predict(xgb_lg_best,test_ds_matrix)))
+lg_score_tbl<-lg_score_tbl%>% mutate(tile=ntile(-score, 10))
+lg_score_tbl%>% group_by(tile) %>% summarise(count=n(), avgSc=mean(score), numDefaults=sum(loan_status=="Charged Off"), avgActRet=mean(actualReturn), minRet=min(actualReturn), maxRet=max(actualReturn), avgTer=mean(actualTerm), totA=sum(grade=="A"), totB=sum(grade=="B" ), totC=sum(grade=="C"), totD=sum(grade=="D"), totE=sum(grade=="E"), totF=sum(grade=="F"),totG=sum(grade=="G"))
+
+lg_ret_tbl<-lg_test_ds%>% select(grade,loan_status, actualReturn, actualTerm, int_rate) %>% mutate(preds=xgb_lg_ret_preds_test)
+lg_ret_tbl<-lg_ret_tbl%>% mutate(tile=ntile(-preds,10))
+lg_ret_tbl%>% group_by(tile) %>% summarise(count=n(), avgpredRet=mean(preds), numDefaults=sum(loan_status=="Charged Off"), avgActRet=mean(actualReturn), minRet=min(actualReturn), maxRet=max(actualReturn), avgTer=mean(actualTerm), totA=sum(grade=="A"), totB=sum(grade=="B" ), totC=sum(grade=="C"), totD=sum(grade=="D"), totE=sum(grade=="E"), totF=sum(grade=="F"),totG=sum(grade=="G"))
+
+
+#considering top d decile from M2
+d=4
+comb_score<-lg_ret_tbl%>% mutate(prob_score=lg_score_tbl$score)
+comb_tbl<-comb_score%>% filter(tile<=d)
+comb_tbl<-comb_tbl%>% mutate(tile=ntile(-prob_score, 20))
+
+
+appro1_tbl <- comb_tbl%>% group_by(tile) %>% summarise(count=n(), avgPredRet=mean(preds), numDefaults=sum(loan_status=="Charged Off"), avgActRet=mean(actualReturn), minRet=min(actualReturn), maxRet=max(actualReturn), avgTer=mean(actualTerm), totA=sum(grade=="A"), totB=sum(grade=="B" ),totC=sum(grade=="C"), totD=sum(grade=="D"), totE=sum(grade=="E"), totF=sum(grade=="F"),totG=sum(grade=="G"))
+
+appro1_tbl
+
+plot(x=appro1_tbl$tile, y=appro1_tbl$avgPredRet,type='l',col='blue',xlim=c(0,20),ylim=c(0,12))
+lines(x=appro1_tbl$tile, y=appro1_tbl$avgActRet,type='l',col='green')
+legend(x = 5,legend=c('Predicted Returns', 'Actual Returns'),col=c('blue', 'green'),lty=1)
+
+appro2_tbl<-comb_tbl%>% mutate(expRet=preds*prob_score)
+appro2_tbl<-appro2_tbl%>% mutate(tile2=ntile(-expRet, 20))
+appro2_tbl <- appro2_tbl%>% group_by(tile2) %>% summarise(count=n(), avgPredRet=mean(preds), numDefaults=sum(loan_status=="Charged Off"), avgActRet=mean(actualReturn), minRet=min(actualReturn), maxRet=max(actualReturn), avgTer=mean(actualTerm), totA=sum(grade=="A"), totB=sum(grade=="B" ), totC=sum(grade=="C"), totD=sum(grade=="D"), totE=sum(grade=="E"), totF=sum(grade=="F"),totG=sum(grade=="G"))
+
+appro2_tbl
+
+plot(x=appro2_tbl$tile2, y=appro2_tbl$avgPredRet,type='l',col='blue',xlim=c(0,20),ylim=c(0,12))
+lines(x=appro2_tbl$tile2, y=appro2_tbl$avgActRet,type='l',col='green')
+legend(x = 5,legend=c('Predicted Returns', 'Actual Returns'),col=c('blue', 'green'),lty=1)
+
+```
+
+
